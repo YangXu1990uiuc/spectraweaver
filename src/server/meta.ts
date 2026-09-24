@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
 
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { writeFileAtomic } from "../common/files.ts";
 import { GRID_PATTERN, TAB_COLORS, type TabView } from "../common/protocol.ts";
 
 interface SessionMeta {
@@ -140,9 +141,7 @@ export class MetaStore {
   flush(): void {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = null;
-    const temp = `${this.file}.tmp`;
-    writeFileSync(temp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
-    renameSync(temp, this.file);
+    writeFileAtomic(this.file, JSON.stringify(this.data, null, 2));
   }
 
   private patchSession(sessionId: string, patch: SessionMeta): void {

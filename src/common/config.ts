@@ -3,14 +3,22 @@
 // Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
 
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync } from "node:fs";
+import { join } from "node:path";
+import { writeFileAtomic } from "./files.ts";
 import { ensurePrivateDir, type Paths } from "./paths.ts";
 
-export interface Config {
+/** Settings shared by all of the user's machines (the config directory may be on NFS). */
+export interface Settings {
+  /** Where per-host state lives, if not the default (e.g. when the home directory is small). */
+  stateDir?: string;
+}
+
+/** This host's instance. Kept in the per-host state directory, never shared between hosts. */
+export interface Instance {
   /**
-   * Names this instance's login cookie. Browsers scope cookies by host, not port, so two
-   * instances reached as localhost:7777 and localhost:7778 would otherwise overwrite each
-   * other's cookie.
+   * Names the login cookie. Browsers scope cookies by host, not port, so two instances
+   * reached as localhost:7777 and localhost:7778 would otherwise overwrite each other's login.
    */
   instanceId: string;
   /** Remembered so the URL, and so a bookmark, stays the same across restarts. */
@@ -18,32 +26,59 @@ export interface Config {
   host?: string;
 }
 
-export function loadConfig(paths: Paths): Config {
-  let stored: Record<string, unknown> = {};
-  if (existsSync(paths.configFile)) {
-    try {
-      stored = JSON.parse(readFileSync(paths.configFile, "utf8")) as Record<string, unknown>;
-    } catch {
-      stored = {};
-    }
+function readJson(file: string): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+  } catch {
+    return {};
   }
-  const config: Config = {
+}
+
+export function loadSettings(paths: Paths): Settings {
+  const stored = readJson(paths.configFile);
+  return typeof stored.stateDir === "string" && stored.stateDir ? { stateDir: stored.stateDir } : {};
+}
+
+export function saveSettings(paths: Paths, settings: Settings): void {
+  ensurePrivateDir(paths.configDir);
+  writeFileAtomic(paths.configFile, `${JSON.stringify(settings, null, 2)}\n`);
+}
+
+export function loadInstance(paths: Paths): Instance {
+  const stored = readJson(paths.instanceFile);
+  const instance: Instance = {
     instanceId:
       typeof stored.instanceId === "string" && /^[0-9a-f]{8}$/.test(stored.instanceId)
         ? stored.instanceId
         : randomBytes(4).toString("hex"),
   };
-  if (Number.isInteger(stored.port) && (stored.port as number) > 0 && (stored.port as number) < 65536) {
-    config.port = stored.port as number;
-  }
-  if (typeof stored.host === "string" && stored.host) config.host = stored.host;
-  if (config.instanceId !== stored.instanceId) saveConfig(paths, config);
-  return config;
+  const port = stored.port;
+  if (typeof port === "number" && Number.isInteger(port) && port > 0 && port < 65536) instance.port = port;
+  if (typeof stored.host === "string" && stored.host) instance.host = stored.host;
+  if (instance.instanceId !== stored.instanceId) saveInstance(paths, instance);
+  return instance;
 }
 
-export function saveConfig(paths: Paths, config: Config): void {
-  ensurePrivateDir(paths.configDir);
-  const temp = `${paths.configFile}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  renameSync(temp, paths.configFile);
+export function saveInstance(paths: Paths, instance: Instance): void {
+  ensurePrivateDir(paths.stateDir);
+  writeFileAtomic(paths.instanceFile, `${JSON.stringify(instance, null, 2)}\n`);
+}
+
+/**
+ * Earlier versions kept state directly in the base directory, which breaks when several
+ * hosts share it (an NFS home). Moves this host's tabs and instance settings into its own
+ * directory. Returns the names of the files it moved.
+ */
+export function migrateFlatState(paths: Paths): string[] {
+  if (paths.stateDir === paths.stateBase) return []; // still on the flat layout
+  const moved: string[] = [];
+  for (const name of ["meta.json", "instance.json"]) {
+    const from = join(paths.stateBase, name);
+    const to = join(paths.stateDir, name);
+    if (!existsSync(from) || existsSync(to)) continue;
+    ensurePrivateDir(paths.stateDir);
+    renameSync(from, to);
+    moved.push(name);
+  }
+  return moved;
 }

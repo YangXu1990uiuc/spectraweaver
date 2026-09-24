@@ -66,7 +66,7 @@ Browser (any device)
         ▼
 workstreams server   (restart any time)
   HTTP + WebSocket gateway · auth · status engine · agent hook endpoint
-  banners / layouts / settings in SQLite (bun:sqlite) · static UI
+  tabs / banners in JSON files (no SQLite: its locking is unreliable on NFS) · static UI
         │  Unix socket, versioned protocol
         ▼
 workstreams daemon   (small, rarely restarted)
@@ -105,16 +105,30 @@ One binary provides both processes plus the CLI (§11): `workstreams daemon`, `w
 
 ### 3.3 State locations
 
-- **Config:** `$XDG_CONFIG_HOME/workstreams/` (default `~/.config/workstreams/`) holds, all mode 0600:
-  - `config.json`: the instance id (names the login cookie) and the remembered port and host;
+Company home directories are often small and shared over NFS by several hosts, so config and state are separate, and state can live anywhere.
+
+- **Config** is a few kilobytes, shared by all of the user's hosts: `$XDG_CONFIG_HOME/workstreams/` (default `~/.config/workstreams/`), or `$WORKSTREAMS_CONFIG_DIR`, or `$WORKSTREAMS_HOME/config`. It holds, all mode 0600:
   - `auth.token`;
-  - `password`: an argon2id hash, present only if a password is set.
-- **State:** `$XDG_STATE_HOME/workstreams/` (default `~/.local/state/workstreams/`) holds:
-  - `daemon.sock`, and optionally `server.sock`;
+  - `password`: an argon2id hash, present only if a password is set, so one password works on every host;
+  - `config.json`: settings, currently only `stateDir`.
+- **State** goes in a **per-host directory** `<state base>/<hostname>/`, because hosts sharing an NFS home must not share a socket, pid files or tabs. The state base is, in order of precedence:
+  1. `$WORKSTREAMS_STATE_DIR`;
+  2. `$WORKSTREAMS_HOME/state`;
+  3. `stateDir` in `config.json`, set with `workstreams config state-dir PATH`; this is the way to keep state on a local or bigger disk without setting environment variables everywhere;
+  4. `$XDG_STATE_HOME/workstreams/` (default `~/.local/state/workstreams/`).
+- **A host's state directory holds:**
+  - `daemon.sock`, `daemon.pid`, `server.json`, and the daemon and server logs (rotated at 5 MB);
+  - `instance.json`: the instance id (names the login cookie) and the remembered port and host;
   - `meta.json`: tabs, banners and which tab each session belongs to;
-  - `sessions/<id>/`, with log segments and the last snapshot (later).
+  - `sessions/<id>/`, with log segments and the last snapshot (later; potentially large, hence the movable state directory).
+- **Moving state.** `workstreams config state-dir` refuses while workstreams runs (the running daemon would be lost track of) and copies the tabs and instance settings to the new place.
 - **Why not `$XDG_RUNTIME_DIR`:** without linger, it is deleted when the user's last login session ends.
-- **Permissions:** directories 0700, sockets 0600.
+- **Permissions:** directories 0700, files and sockets 0600.
+
+**NFS.** workstreams never uses file locks and never uses SQLite, the usual causes of trouble on NFS (VS Code Server's lock files are an example). Every file is written to a temporary name and renamed into place, which is atomic on NFS, and nothing relies on inotify. Changes made on another host (a new password, say) are noticed by polling file stamps, after the NFS attribute cache expires. The one NFS-sensitive piece is the daemon's Unix socket file:
+- per-host directories keep other hosts from mistaking it for a stale socket and deleting it;
+- some NFS servers refuse to create socket files; the daemon then says so and suggests a local state directory;
+- `up`, `status` and `config` point out when the state directory is on a network filesystem (NFS, SMB, Lustre, GPFS, CephFS, AFS), since a local disk is faster.
 
 ### 3.4 Daemon protocol (server ↔ daemon)
 
@@ -496,7 +510,7 @@ The UI is a shell. Adversaries:
 ### 9.3 Shared machines
 
 Each Unix user runs their own instance; nothing is shared between users.
-- **State is per user.** Sockets, tokens, passwords and sessions live under each user's home directory, owner-only.
+- **State is per user and per host.** Sockets, tokens, passwords and sessions live in each user's own directories, owner-only; each host gets its own state directory even when the home directory is shared over NFS (§3.3).
 - **Ports.** The first `workstreams up` takes the first free port from 7777 and remembers it, so URLs and bookmarks stay stable. An explicit `--port` also sticks. If the remembered port is later taken, `up` stops and says so instead of silently moving.
 - **Telling instances apart.** `/api/health` reports the server's uid, and `up` accepts a server as its own only if the uid matches. Otherwise, on a shared machine, it could mistake another user's server on the same port for its own and print a link to it.
 
@@ -546,6 +560,8 @@ workstreams hook <agent>                agent hook entry point (JSON on stdin)
 workstreams hooks install <agent>
 workstreams install-service
 workstreams passwd [--clear]            set or remove the browser sign-in password
+workstreams config                      show where config and state live
+workstreams config state-dir PATH|--reset  move this host's state, e.g. off a small or NFS home
 workstreams token [--rotate]
 ```
 

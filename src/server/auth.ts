@@ -3,8 +3,9 @@
 // Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname } from "node:path";
+import { writeFileAtomic } from "../common/files.ts";
 import { ensurePrivateDir } from "../common/paths.ts";
 
 export const MIN_PASSWORD_LENGTH = 8;
@@ -26,8 +27,7 @@ export function loadOrCreateToken(file: string): string {
 export function rotateToken(file: string): string {
   ensurePrivateDir(dirname(file));
   const token = randomBytes(24).toString("base64url");
-  writeFileSync(file, `${token}\n`, { mode: 0o600 });
-  chmodSync(file, 0o600);
+  writeFileAtomic(file, `${token}\n`);
   return token;
 }
 
@@ -42,8 +42,7 @@ export async function setPassword(file: string, password: string): Promise<void>
   if (problem) throw new Error(problem);
   const hash = await Bun.password.hash(password, { algorithm: "argon2id" });
   ensurePrivateDir(dirname(file));
-  writeFileSync(file, `${hash}\n`, { mode: 0o600 });
-  chmodSync(file, 0o600);
+  writeFileAtomic(file, `${hash}\n`);
 }
 
 export function clearPassword(file: string): void {

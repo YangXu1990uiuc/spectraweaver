@@ -5,7 +5,7 @@
 import type { ServerWebSocket } from "bun";
 import { randomBytes } from "node:crypto";
 import { hostname, userInfo } from "node:os";
-import { loadConfig } from "../common/config.ts";
+import { loadInstance } from "../common/config.ts";
 import { ensurePrivateDir, type Paths } from "../common/paths.ts";
 import type {
   ClientMessage,
@@ -75,9 +75,9 @@ function ownerName(): string {
 export async function startServer(options: ServerOptions): Promise<ServerHandle> {
   const log = options.log ?? ((message: string) => console.error(`[server] ${message}`));
   ensurePrivateDir(options.paths.stateDir);
-  const config = loadConfig(options.paths);
+  const instance = loadInstance(options.paths);
   const credentials = new Credentials(options.paths.tokenFile, options.paths.passwordFile);
-  const cookie = cookieName(config.instanceId);
+  const cookie = cookieName(instance.instanceId);
   const throttle = new LoginThrottle();
   const guard = new RequestGuard(options.allowHosts);
   const meta = new MetaStore(options.paths.metaFile);

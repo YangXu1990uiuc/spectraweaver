@@ -48,9 +48,19 @@ VS Code Remote's port forwarding works too. Browsers treat `localhost` as a secu
   - macOS: Cmd+C and Cmd+V.
 - **Browser shortcuts:** open the page as an app window (install it as an app in Chrome/Edge, or launch with `--app=URL`). A normal browser tab keeps Ctrl+W, Ctrl+T and Ctrl+N for itself, so they never reach the terminal.
 
-## Shared servers
+## Shared servers, small or NFS home directories
 
-Every user runs their own instance; state lives in each user's home directory. The first `up` picks the first free port from 7777 and remembers it, so your bookmark keeps working. Use `--port N` to choose one. Sign-in is required even on localhost, because other users on the machine can reach 127.0.0.1.
+Every user runs their own instance. The first `up` picks the first free port from 7777 and remembers it, so your bookmark keeps working; use `--port N` to choose one. Sign-in is required even on localhost, because other users on the machine can reach 127.0.0.1.
+
+Only a few kilobytes live in your home directory (`~/.config/workstreams`: the token, the password hash and settings), shared by all your hosts, so one password works everywhere. Everything else is per host, in `~/.local/state/workstreams/<hostname>/`, so several servers sharing an NFS home never step on each other. If your home directory is small, or you'd rather keep state off NFS, move it:
+
+```sh
+workstreams down --all                                # moving state requires a stop
+workstreams config state-dir /local/$USER/workstreams # any local or bigger disk
+workstreams up
+```
+
+workstreams uses no file locks and no SQLite, the usual sources of NFS trouble. It writes every file atomically (write, then rename) and warns when the state directory is on a network filesystem. `WORKSTREAMS_HOME=/path` relocates config and state together, if you prefer an environment variable.
 
 ## Commands
 
@@ -63,6 +73,7 @@ Every user runs their own instance; state lives in each user's home directory. T
 | `workstreams token [--rotate]` | Print the login token and link; `--rotate` replaces the token and signs out every browser. |
 | `workstreams new [--size 120x36] [--cwd DIR] [-- COMMAND]` | Create a session from the command line. |
 | `workstreams ls` | List sessions. |
+| `workstreams config [state-dir PATH \| --reset]` | Show where config and state live, or move this host's state. |
 
 When running from source, use `bun run dev <command>`.
 

@@ -6,7 +6,8 @@ import type { Socket } from "bun";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { networkFilesystem } from "../common/files.ts";
 import { ensurePrivateDir, type Paths } from "../common/paths.ts";
 import {
   type DaemonEvent,
@@ -103,27 +104,24 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     },
   };
 
-  const listener = Bun.listen<Connection>({
-    unix: socketPath,
-    socket: {
-      open(socket) {
-        const connection = new Connection(socket, context);
-        socket.data = connection;
-        connections.add(connection);
-      },
-      data(socket, chunk) {
-        socket.data.receive(chunk);
-      },
-      drain(socket) {
-        socket.data.drain();
-      },
-      close(socket) {
-        socket.data.onClose();
-        connections.delete(socket.data);
-      },
-      error(_socket, error) {
-        log(`socket error: ${error.message}`);
-      },
+  const listener = listenUnix(socketPath, {
+    open(socket) {
+      const connection = new Connection(socket, context);
+      socket.data = connection;
+      connections.add(connection);
+    },
+    data(socket, chunk) {
+      socket.data.receive(chunk);
+    },
+    drain(socket) {
+      socket.data.drain();
+    },
+    close(socket) {
+      socket.data.onClose();
+      connections.delete(socket.data);
+    },
+    error(_socket, error) {
+      log(`socket error: ${error.message}`);
     },
   });
   chmodSync(socketPath, 0o600);
@@ -264,6 +262,25 @@ class Connection implements Subscriber {
         this.respond(request.id, null);
         return;
     }
+  }
+}
+
+function listenUnix(
+  socketPath: string,
+  handlers: Parameters<typeof Bun.listen<Connection>>[0]["socket"],
+): ReturnType<typeof Bun.listen<Connection>> {
+  try {
+    return Bun.listen<Connection>({ unix: socketPath, socket: handlers });
+  } catch (error) {
+    // Some network filesystems refuse to create socket files.
+    const where = networkFilesystem(dirname(socketPath));
+    const hint = where
+      ? `The state directory is on ${where}, which may not allow socket files. `
+      : "";
+    throw new Error(
+      `cannot create the daemon socket ${socketPath}: ${(error as Error).message}\n${hint}` +
+        "Put the state directory on a local disk: `workstreams config state-dir /local/path`.",
+    );
   }
 }
 

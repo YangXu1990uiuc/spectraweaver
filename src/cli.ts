@@ -4,12 +4,13 @@
 // Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
 
 import { spawn } from "node:child_process";
-import { existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { loadConfig, saveConfig } from "./common/config.ts";
+import { join, resolve } from "node:path";
+import { loadInstance, loadSettings, migrateFlatState, saveInstance, saveSettings } from "./common/config.ts";
+import { networkFilesystem, writeFileAtomic } from "./common/files.ts";
 import { pickFreePort, portIsFree } from "./common/net.ts";
-import { ensurePrivateDir, type Paths, resolvePaths } from "./common/paths.ts";
+import { ensurePrivateDir, expandHome, hostKey, MAX_SOCKET_PATH, type Paths, resolvePaths } from "./common/paths.ts";
 import {
   type DaemonMessage,
   type DaemonRequest,
@@ -25,7 +26,8 @@ import { VERSION } from "./common/version.ts";
 const FIRST_PORT = 7777;
 const PORT_SEARCH = 100;
 const DEFAULT_HOST = "127.0.0.1";
-const BOOLEAN_FLAGS = new Set(["all", "clear", "rotate"]);
+const BOOLEAN_FLAGS = new Set(["all", "clear", "rotate", "reset"]);
+const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
 const USAGE = `workstreams ${VERSION}: persistent terminals in the browser
 
@@ -43,6 +45,10 @@ Usage:
   workstreams new [--size 120x36] [--cwd DIR] [-- COMMAND...]
                         create a session (COMMAND is typed into its shell)
   workstreams ls        list sessions
+  workstreams config    show where config and state live
+  workstreams config state-dir PATH | --reset
+                        keep state (socket, logs, tabs) under PATH, e.g. on a local disk
+                        when the home directory is small or on NFS
   workstreams daemon    run the daemon in the foreground
   workstreams server [--port N] [--host ADDR] [--allow-host NAME]...
                         run the server in the foreground
@@ -144,6 +150,10 @@ function selfArgv(args: string[]): string[] {
 }
 
 function spawnDetached(argv: string[], logFile: string): void {
+  // Keep logs small: home directories are often tiny.
+  if ((statSync(logFile, { throwIfNoEntry: false })?.size ?? 0) > MAX_LOG_BYTES) {
+    renameSync(logFile, `${logFile}.1`);
+  }
   const out = openSync(logFile, "a", 0o600);
   // A new session (setsid) and no controlling terminal: closing the terminal that ran
   // `workstreams up` must not take the daemon with it.
@@ -176,7 +186,7 @@ function isAlive(pid: number): boolean {
 
 function readServerState(paths: Paths): ServerState | null {
   try {
-    const state = JSON.parse(readFileSync(join(paths.stateDir, "server.json"), "utf8")) as ServerState;
+    const state = JSON.parse(readFileSync(paths.serverStateFile, "utf8")) as ServerState;
     return isAlive(state.pid) ? state : null;
   } catch {
     return null;
@@ -241,9 +251,10 @@ async function cmdUp(args: string[]): Promise<void> {
   const flags = parseFlags(args, ["port", "host", "allow-host"]);
   const paths = resolvePaths();
   ensurePrivateDir(paths.stateDir);
-  const config = loadConfig(paths);
+  for (const name of migrateFlatState(paths)) console.log(`moved   ${name} into ${paths.stateDir}`);
+  const instance = loadInstance(paths);
   const requestedPort = flag(flags, "port");
-  const host = flag(flags, "host") ?? config.host ?? DEFAULT_HOST;
+  const host = flag(flags, "host") ?? instance.host ?? DEFAULT_HOST;
   const allowHosts = flags.values.get("allow-host") ?? [];
 
   if (await daemonHello(paths)) {
@@ -268,7 +279,7 @@ async function cmdUp(args: string[]): Promise<void> {
     }
     console.log(`server  already running at ${url}`);
   } else {
-    let port = requestedPort ? Number(requestedPort) : config.port;
+    let port = requestedPort ? Number(requestedPort) : instance.port;
     if (port === undefined) {
       port = pickFreePort(host, FIRST_PORT, PORT_SEARCH) ?? undefined;
       if (port === undefined) {
@@ -291,8 +302,15 @@ async function cmdUp(args: string[]): Promise<void> {
     if (!(await waitFor(() => isOwnServer(url), 10_000))) {
       fail(`the server did not start; see ${paths.serverLog}`);
     }
-    saveConfig(paths, { ...config, port, host });
+    saveInstance(paths, { ...instance, port, host });
     console.log(`server  started at ${url}`);
+  }
+  console.log(`state   ${paths.stateDir}`);
+  const remote = networkFilesystem(paths.stateDir);
+  if (remote) {
+    console.log(
+      `        (on ${remote}: this works, but a local disk is faster; see \`workstreams config state-dir\`)`,
+    );
   }
 
   const passwordSet = existsSync(paths.passwordFile);
@@ -344,6 +362,7 @@ async function cmdStatus(): Promise<void> {
   if (server) console.log(`server  running  pid ${server.pid}  ${serverUrl(server.host, server.port)}`);
   else console.log("server  not running");
   console.log(`login   ${existsSync(paths.passwordFile) ? "password or token" : "token (no password set)"}`);
+  console.log(`state   ${paths.stateDir}`);
 }
 
 async function cmdPasswd(args: string[]): Promise<void> {
@@ -371,10 +390,10 @@ async function cmdToken(args: string[]): Promise<void> {
   const { loadOrCreateToken, rotateToken } = await import("./server/auth.ts");
   const token = flag(flags, "rotate") ? rotateToken(paths.tokenFile) : loadOrCreateToken(paths.tokenFile);
   const server = readServerState(paths);
-  const config = loadConfig(paths);
+  const instance = loadInstance(paths);
   const url = server
     ? serverUrl(server.host, server.port)
-    : serverUrl(config.host ?? DEFAULT_HOST, config.port ?? FIRST_PORT);
+    : serverUrl(instance.host ?? DEFAULT_HOST, instance.port ?? FIRST_PORT);
   console.log(token);
   console.log(`\nLogin link: ${url}/#token=${token}`);
   if (flag(flags, "rotate")) console.log("The old token and every browser login are no longer valid.");
@@ -407,11 +426,66 @@ async function cmdList(): Promise<void> {
   }
 }
 
+async function cmdConfig(args: string[]): Promise<void> {
+  const paths = resolvePaths();
+  const [key, ...rest] = args;
+  if (key === undefined) {
+    console.log(`config  ${paths.configDir}   (token, password hash, settings; shared by your hosts)`);
+    console.log(`state   ${paths.stateDir}   (this host: socket, logs, tabs)`);
+    console.log(`        from ${paths.stateSource}`);
+    const remote = networkFilesystem(paths.stateDir);
+    if (remote) console.log(`        on ${remote}; a local disk is faster`);
+    return;
+  }
+  if (key !== "state-dir") fail(`unknown setting: ${key}\n\n${USAGE}`);
+  const flags = parseFlags(rest, ["reset"]);
+  if (process.env.WORKSTREAMS_STATE_DIR || process.env.WORKSTREAMS_HOME) {
+    console.log("Note: $WORKSTREAMS_STATE_DIR / $WORKSTREAMS_HOME is set and takes precedence over this setting.");
+  }
+  // Moving state under a running daemon would lose track of it (and of its sessions).
+  if ((await daemonHello(paths)) || readServerState(paths)) {
+    fail(
+      `workstreams is running with state in ${paths.stateDir}.\n` +
+        "Stop it first with `workstreams down --all` (this ends every session), then run this again.",
+    );
+  }
+  const settings = loadSettings(paths);
+  if (flag(flags, "reset")) {
+    delete settings.stateDir;
+  } else {
+    const target = flags.rest[0];
+    if (!target) fail("usage: workstreams config state-dir PATH | --reset");
+    const base = resolve(expandHome(target));
+    const socket = join(base, hostKey(), "daemon.sock");
+    if (socket.length > MAX_SOCKET_PATH) {
+      fail(`${base} is too long a path for the daemon's socket (${socket.length} bytes, limit ${MAX_SOCKET_PATH}); choose a shorter one.`);
+    }
+    ensurePrivateDir(join(base, hostKey()));
+    settings.stateDir = base;
+  }
+  saveSettings(paths, settings);
+  const next = resolvePaths();
+  // Bring this host's tabs and instance settings (port, login cookie name) along.
+  for (const name of ["meta.json", "instance.json"]) {
+    const from = join(paths.stateDir, name);
+    const to = join(next.stateDir, name);
+    if (from !== to && existsSync(from) && !existsSync(to)) {
+      ensurePrivateDir(next.stateDir);
+      copyFileSync(from, to);
+      console.log(`copied  ${name}`);
+    }
+  }
+  console.log(`state   ${next.stateDir}`);
+  const remote = networkFilesystem(next.stateDir);
+  if (remote) console.log(`        on ${remote}: this works, but a local disk is faster`);
+}
+
 async function cmdDaemon(): Promise<void> {
   const paths = resolvePaths();
+  migrateFlatState(paths);
   const { startDaemon } = await import("./daemon/daemon.ts");
   const handle = await startDaemon({ paths }).catch((error: Error) => fail(error.message));
-  writeFileSync(paths.daemonPidFile, `${process.pid}\n`, { mode: 0o600 });
+  writeFileAtomic(paths.daemonPidFile, `${process.pid}\n`);
   const shutdown = async () => {
     await handle.stop();
     rmSync(paths.daemonPidFile, { force: true });
@@ -424,22 +498,22 @@ async function cmdDaemon(): Promise<void> {
 async function cmdServer(args: string[]): Promise<void> {
   const flags = parseFlags(args, ["port", "host", "allow-host"]);
   const paths = resolvePaths();
-  const config = loadConfig(paths);
-  const host = flag(flags, "host") ?? config.host ?? DEFAULT_HOST;
+  migrateFlatState(paths);
+  const instance = loadInstance(paths);
+  const host = flag(flags, "host") ?? instance.host ?? DEFAULT_HOST;
   const { startServer } = await import("./server/server.ts");
   const handle = await startServer({
     paths,
     host,
-    port: Number(flag(flags, "port") ?? config.port ?? FIRST_PORT),
+    port: Number(flag(flags, "port") ?? instance.port ?? FIRST_PORT),
     allowHosts: flags.values.get("allow-host") ?? [],
     development: process.env.WORKSTREAMS_DEV === "1",
   }).catch((error: Error) => fail(error.message));
-  const stateFile = join(paths.stateDir, "server.json");
   const state: ServerState = { pid: process.pid, host, port: handle.port };
-  writeFileSync(stateFile, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+  writeFileAtomic(paths.serverStateFile, `${JSON.stringify(state)}\n`);
   const shutdown = async () => {
     await handle.stop();
-    rmSync(stateFile, { force: true });
+    rmSync(paths.serverStateFile, { force: true });
     process.exit(0);
   };
   process.on("SIGTERM", () => void shutdown());
@@ -469,6 +543,9 @@ try {
       break;
     case "ls":
       await cmdList();
+      break;
+    case "config":
+      await cmdConfig(args);
       break;
     case "daemon":
       await cmdDaemon();
