@@ -24,6 +24,8 @@ export interface Instance {
   /** Remembered so the URL, and so a bookmark, stays the same across restarts. */
   port?: number;
   host?: string;
+  /** More Host names browsers may use (--allow-host), remembered like the host. */
+  allowHosts?: string[];
 }
 
 function readJson(file: string): Record<string, unknown> {
@@ -55,6 +57,10 @@ export function loadInstance(paths: Paths): Instance {
   const port = stored.port;
   if (typeof port === "number" && Number.isInteger(port) && port > 0 && port < 65536) instance.port = port;
   if (typeof stored.host === "string" && stored.host) instance.host = stored.host;
+  const allowHosts = stored.allowHosts;
+  if (Array.isArray(allowHosts) && allowHosts.length > 0 && allowHosts.every((name) => typeof name === "string")) {
+    instance.allowHosts = allowHosts;
+  }
   if (instance.instanceId !== stored.instanceId) saveInstance(paths, instance);
   return instance;
 }

@@ -4,9 +4,9 @@
 
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { boundHostAllowlist, Credentials, hostnameOf, RequestGuard } from "../src/server/auth.ts";
+import { boundHostAllowlist, Credentials, hostnameOf, machineNames, RequestGuard } from "../src/server/auth.ts";
 
 function request(headers: Record<string, string>): Request {
   return new Request("http://127.0.0.1:7777/ws", { headers });
@@ -38,14 +38,24 @@ test("unknown Host headers are rejected (DNS rebinding) unless allowed", () => {
   expect(new RequestGuard(["evil.example"]).check(rebinding, true)).toBe(true);
 });
 
-test("a specific bound address is allowed as Host; loopback and wildcards add nothing", () => {
-  expect(boundHostAllowlist("127.0.0.1")).toEqual([]);
-  expect(boundHostAllowlist("0.0.0.0")).toEqual([]);
-  expect(boundHostAllowlist("::")).toEqual([]);
-  expect(boundHostAllowlist("10.1.2.3")).toEqual(["10.1.2.3"]);
-  expect(boundHostAllowlist("fd00::1")).toEqual(["[fd00::1]"]);
-  const guard = new RequestGuard(boundHostAllowlist("10.1.2.3"));
+test("beyond loopback, the machine's own names and addresses are allowed as Host", () => {
+  const machine = { names: ["devbox", "devbox.local"], addresses: ["10.1.2.3", "[fd00::1]"] };
+  expect(boundHostAllowlist("127.0.0.1", machine)).toEqual([]);
+  expect(boundHostAllowlist("10.1.2.3", machine)).toEqual(["devbox", "devbox.local", "10.1.2.3"]);
+  expect(boundHostAllowlist("fd00::1", machine)).toEqual(["devbox", "devbox.local", "[fd00::1]"]);
+  expect(boundHostAllowlist("0.0.0.0", machine)).toEqual(["devbox", "devbox.local", "10.1.2.3", "[fd00::1]"]);
+
+  const guard = new RequestGuard(boundHostAllowlist("0.0.0.0", machine));
+  expect(guard.check(request({ host: "devbox:7777", origin: "http://devbox:7777" }), true)).toBe(true);
   expect(guard.check(request({ host: "10.1.2.3:7777", origin: "http://10.1.2.3:7777" }), true)).toBe(true);
+  // DNS rebinding still fails: the attacker's page arrives with its own host name.
+  expect(guard.check(request({ host: "evil.example:7777", origin: "http://evil.example:7777" }), true)).toBe(false);
+});
+
+test("the machine's names include its host name and a .local name", () => {
+  const { names } = machineNames();
+  expect(names[0]).toBe(hostname().toLowerCase());
+  expect(names.some((name) => name.endsWith(".local"))).toBe(true);
 });
 
 test("credentials fail closed when the token file disappears or is truncated", () => {

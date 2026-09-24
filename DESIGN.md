@@ -490,7 +490,7 @@ The UI is a shell. Adversaries:
 
 ### 9.2 Controls
 
-- **Listening.** Listen on 127.0.0.1 by default (a Unix socket, mode 0600, is planned). Binding any other address requires `--allow-remote` and prints a warning, because the server speaks plain HTTP; a specific bound address is added to the Host allowlist automatically, wildcards need `--allow-host`. The page also refuses to run inside another site's frame (clickjacking); `SameSite=Strict` already keeps framed copies signed out.
+- **Listening.** Listen on 127.0.0.1 by default (a Unix socket, mode 0600, is planned). Binding any other address requires `--allow-remote` and prints a warning, because the server speaks plain HTTP; the machine's names and its addresses (the bound one, or every interface's for a wildcard) are added to the Host allowlist automatically, since a DNS-rebinding page arrives with its own name; other names need `--allow-host`. `up` remembers the host and the extra names. The page also refuses to run inside another site's frame (clickjacking); `SameSite=Strict` already keeps framed copies signed out.
 - **Authentication** is always on, even on localhost, because other local users can reach 127.0.0.1.
   - **Token.** The first run generates a random token, stored in a 0600 file. `spectraweaver up` prints a login link with it in the URL fragment; the page exchanges it for a cookie and removes it from the address bar and history. `spectraweaver token --rotate` replaces it.
   - **Password (optional).** Set with `spectraweaver passwd` or in Settings, and stored as an argon2id hash. Once it is set, a bookmark of the plain URL is enough: the login page shows `user @ host`, so it is clear whose instance it is, and asks for the password.
@@ -521,6 +521,7 @@ Each Unix user runs their own instance; nothing is shared between users.
 2. **Tailscale Serve.** Valid certificates and tailnet-only access. Hostnames appear in public certificate-transparency logs.
 3. **A reverse proxy** with TLS.
 4. **Built-in TLS** with a user-provided certificate.
+5. **Listening on the network** (`--host 0.0.0.0 --allow-remote`), on a trusted network only. It is the least setup, but plain HTTP: the password, the token and terminal contents cross the network unencrypted, and the features in §6.6 are unavailable.
 
 ## 10. Packaging and operations
 

@@ -4,6 +4,7 @@
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { hostname, type NetworkInterfaceInfo, networkInterfaces } from "node:os";
 import { dirname } from "node:path";
 import { writeFileAtomic } from "../common/files.ts";
 import { isLoopbackAddress } from "../common/net.ts";
@@ -156,13 +157,37 @@ export function readCookie(request: Request, name: string): string | null {
 
 const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
+/** How browsers on the network can address this machine: its names and interface addresses. */
+export interface MachineNames {
+  names: string[];
+  addresses: string[];
+}
+
+export function machineNames(): MachineNames {
+  const full = hostname().toLowerCase();
+  const short = full.split(".")[0] || full;
+  const addresses = Object.values(networkInterfaces())
+    .flat()
+    .filter((info): info is NetworkInterfaceInfo => info !== undefined && !info.internal)
+    .filter((info) => !info.address.startsWith("fe80:")) // link-local needs a zone id in URLs
+    .map((info) => bracketIPv6(info.address));
+  return { names: [...new Set([full, short, `${short}.local`])], addresses };
+}
+
 /**
- * When the server binds a specific non-loopback address, browsers send that address as the
- * Host header, so it must be allowed. Wildcards (0.0.0.0, ::) need explicit --allow-host.
+ * The Host names allowed when the server listens beyond loopback: the machine's names, and
+ * the bound address or, for a wildcard (0.0.0.0, ::), every interface address. DNS rebinding
+ * stays blocked, because a rebinding page arrives with its own host name. Any other name (a
+ * DNS alias, a Tailscale name, a proxy) needs --allow-host.
  */
-export function boundHostAllowlist(host: string): string[] {
-  if (isLoopbackAddress(host) || host === "0.0.0.0" || host === "::" || host === "") return [];
-  return [host.includes(":") && !host.startsWith("[") ? `[${host}]` : host];
+export function boundHostAllowlist(host: string, machine: MachineNames = machineNames()): string[] {
+  if (isLoopbackAddress(host) || host === "") return [];
+  const wildcard = host === "0.0.0.0" || host === "::";
+  return [...new Set([...machine.names, ...(wildcard ? machine.addresses : [bracketIPv6(host)])])];
+}
+
+function bracketIPv6(address: string): string {
+  return address.includes(":") && !address.startsWith("[") ? `[${address}]` : address;
 }
 
 export function hostnameOf(hostHeader: string): string {

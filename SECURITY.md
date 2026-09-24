@@ -10,7 +10,7 @@ SpectraWeaver puts a shell in a web page: **anyone who can sign in gets a shell 
   - Don't forward its port on a router or cloud firewall.
   - Don't bind it to a public interface.
   - Don't publish it through a reverse proxy without an additional authentication layer in front.
-- **Beyond localhost, it speaks plain HTTP.** Binding another address (`--host`) requires `--allow-remote`, because passwords, tokens and terminal contents would then cross the network unencrypted. If you must, put it behind HTTPS on a trusted network: Tailscale Serve, or a reverse proxy with TLS and its own authentication. Pass `--allow-host <name>` for the name browsers use.
+- **Beyond localhost, it speaks plain HTTP.** Binding another address (`--host`) requires `--allow-remote`, because passwords, tokens and terminal contents would then cross the network unencrypted. If you must, put it behind HTTPS on a trusted network: Tailscale Serve, or a reverse proxy with TLS and its own authentication. The machine's own names and addresses are accepted; pass `--allow-host <name>` for any other name browsers use, such as a DNS alias or a proxy's name. `up` remembers these options.
 - **Use a strong password.** Sign-in is required even on localhost, because other users on the same machine can reach 127.0.0.1. Password guessing is throttled, but a strong password is still your main protection. If a login link or token may have leaked, run `spectraweaver token --rotate`: it invalidates the token and every browser login.
 
 ## What it protects against

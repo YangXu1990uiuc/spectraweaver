@@ -5,7 +5,7 @@
 
 import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname, networkInterfaces } from "node:os";
 import { join, resolve } from "node:path";
 import { loadInstance, loadSettings, migrateOlderState, saveInstance, saveSettings } from "./common/config.ts";
 import { networkFilesystem, writeFileAtomic } from "./common/files.ts";
@@ -220,6 +220,20 @@ function serverUrl(host: string, port: number): string {
   return `http://${shown}:${port}`;
 }
 
+/** The address to open in a browser. A wildcard bind is reached by this machine's name. */
+function browserUrl(host: string, port: number): string {
+  return host === "0.0.0.0" || host === "::" ? `http://${hostname()}:${port}` : serverUrl(host, port);
+}
+
+/** IPv4 addresses of real network interfaces (not container bridges), to offer instead of the name. */
+function lanAddresses(): string[] {
+  return Object.entries(networkInterfaces())
+    .filter(([name]) => !/^(docker|br-|veth|virbr|cni|flannel|lxc)/.test(name))
+    .flatMap(([, infos]) => infos ?? [])
+    .filter((info) => info.family === "IPv4" && !info.internal)
+    .map((info) => info.address);
+}
+
 /** The server's health report, or null if nothing (or not SpectraWeaver) answers there. */
 async function probeServer(url: string): Promise<{ uid: number | null } | null> {
   try {
@@ -277,7 +291,7 @@ async function cmdUp(args: string[]): Promise<void> {
   const instance = loadInstance(paths);
   const requestedPort = flag(flags, "port");
   const host = flag(flags, "host") ?? instance.host ?? DEFAULT_HOST;
-  const allowHosts = flags.values.get("allow-host") ?? [];
+  const allowHosts = flags.values.get("allow-host") ?? instance.allowHosts ?? [];
   checkRemoteExposure(host, flag(flags, "allow-remote") !== undefined || instance.host === host);
 
   if (await daemonHello(paths)) {
@@ -290,17 +304,19 @@ async function cmdUp(args: string[]): Promise<void> {
     console.log("daemon  started");
   }
 
-  let url: string;
+  let url: string; // for probing the server from here
+  let link: string; // for opening in a browser
   const running = readServerState(paths);
   if (running) {
     url = serverUrl(running.host, running.port);
+    link = browserUrl(running.host, running.port);
     if (requestedPort && Number(requestedPort) !== running.port) {
       fail(`the server already runs on port ${running.port}; run \`spectraweaver down\` first to change it`);
     }
     if (!(await waitFor(() => isOwnServer(url), 5000))) {
       fail(`the server (pid ${running.pid}) is not responding; see ${paths.serverLog}`);
     }
-    console.log(`server  already running at ${url}`);
+    console.log(`server  already running at ${link}`);
   } else {
     let port = requestedPort ? Number(requestedPort) : instance.port;
     if (port === undefined) {
@@ -320,6 +336,7 @@ async function cmdUp(args: string[]): Promise<void> {
       fail(`port ${port} is used by ${holder}; choose another with --port`);
     }
     url = serverUrl(host, port);
+    link = browserUrl(host, port);
     const allow = allowHosts.flatMap((name) => ["--allow-host", name]);
     const remote = isLoopbackAddress(host) ? [] : ["--allow-remote"];
     spawnDetached(
@@ -329,8 +346,8 @@ async function cmdUp(args: string[]): Promise<void> {
     if (!(await waitFor(() => isOwnServer(url), 10_000))) {
       fail(`the server did not start; see ${paths.serverLog}`);
     }
-    saveInstance(paths, { ...instance, port, host });
-    console.log(`server  started at ${url}`);
+    saveInstance(paths, { ...instance, port, host, allowHosts: allowHosts.length > 0 ? allowHosts : undefined });
+    console.log(`server  started at ${link}`);
   }
   console.log(`state   ${paths.stateDir}`);
   const remote = networkFilesystem(paths.stateDir);
@@ -342,15 +359,19 @@ async function cmdUp(args: string[]): Promise<void> {
 
   const passwordSet = existsSync(paths.passwordFile);
   if (passwordSet) {
-    console.log(`\nBookmark ${url}/ and sign in with your password.`);
+    console.log(`\nBookmark ${link}/ and sign in with your password.`);
   } else {
     const { loadOrCreateToken } = await import("./server/auth.ts");
-    console.log(`\nOpen ${url}/#token=${loadOrCreateToken(paths.tokenFile)}`);
-    console.log(`Tip: run \`spectraweaver passwd\` to sign in with a password instead, then bookmark ${url}/`);
+    console.log(`\nOpen ${link}/#token=${loadOrCreateToken(paths.tokenFile)}`);
+    console.log(`Tip: run \`spectraweaver passwd\` to sign in with a password instead, then bookmark ${link}/`);
   }
   const port = new URL(url).port;
-  if (["127.0.0.1", "localhost", "::1"].includes(running?.host ?? host)) {
-    console.log(`From another computer: ssh -L ${port}:localhost:${port} <this server>`);
+  const bound = running?.host ?? host;
+  if (["127.0.0.1", "localhost", "::1"].includes(bound)) {
+    console.log(`From another computer, run there: ssh -L ${port}:localhost:${port} <this server>`);
+  } else if (bound === "0.0.0.0" || bound === "::") {
+    const byAddress = lanAddresses().map((address) => `http://${address}:${port}/`);
+    if (byAddress.length > 0) console.log(`If the name does not resolve there, use ${byAddress.join(" or ")}`);
   }
 }
 
@@ -535,7 +556,7 @@ async function cmdServer(args: string[]): Promise<void> {
     paths,
     host,
     port: Number(flag(flags, "port") ?? instance.port ?? FIRST_PORT),
-    allowHosts: flags.values.get("allow-host") ?? [],
+    allowHosts: flags.values.get("allow-host") ?? instance.allowHosts ?? [],
     development: process.env.SPECTRAWEAVER_DEV === "1",
   }).catch((error: Error) => fail(error.message));
   const state: ServerState = { pid: process.pid, host, port: handle.port };

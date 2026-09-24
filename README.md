@@ -27,13 +27,17 @@ spectraweaver up
 
 `up` starts the daemon and the web server in the background and prints a login link like `http://127.0.0.1:7777/#token=…`.
 
-The server only listens on 127.0.0.1. To reach it from your laptop, forward the port and open the link there:
+The server only listens on 127.0.0.1, so reach it from your laptop through SSH:
 
-```sh
-ssh -L 7777:localhost:7777 your-dev-server
-```
+- **VS Code Remote-SSH** forwards the port by itself while it is connected: open the link on your laptop as it is.
+- **Otherwise, run this on your laptop** and keep it running (Windows 10 and 11 include `ssh`; use PowerShell):
+  ```sh
+  ssh -N -L 7777:localhost:7777 your-dev-server
+  ```
+  To forward every time you connect, add `LocalForward 7777 localhost:7777` under the server's `Host` entry in `~/.ssh/config`.
+- **On a network you trust**, you can skip SSH: `spectraweaver up --host 0.0.0.0 --allow-remote` listens on every interface and prints links by this machine's name and addresses, and later `up`s remember it. This is plain HTTP: read [SECURITY.md](SECURITY.md) first.
 
-VS Code Remote's port forwarding works too. Browsers treat `localhost` as a secure context, so clipboard features work over the tunnel.
+Browsers treat `localhost` as a secure context, so every clipboard feature works through a tunnel. Over plain `http://<server>`, Ctrl+C and Ctrl+V still work, but programs cannot copy to your clipboard (OSC 52).
 
 **Sign in with a password instead of the link:** run `spectraweaver passwd` (or use ⚙ Settings in the page), then bookmark `http://127.0.0.1:7777/`. The login page shows whose instance it is (`user @ host`) and asks for the password.
 
@@ -70,7 +74,7 @@ SpectraWeaver uses no file locks and no SQLite, the usual sources of NFS trouble
 
 | Command | What it does |
 |---|---|
-| `spectraweaver up [--port N] [--allow-host NAME]` | Start the daemon and the server in the background. (`--host ADDR --allow-remote` listens beyond localhost; read [SECURITY.md](SECURITY.md) first.) |
+| `spectraweaver up [--port N] [--allow-host NAME]` | Start the daemon and the server in the background; later runs remember the options. (`--host ADDR --allow-remote` listens beyond localhost; read [SECURITY.md](SECURITY.md) first.) |
 | `spectraweaver down [--all]` | Stop the server. `--all` also stops the daemon, which ends every session. |
 | `spectraweaver status` | Show what is running. |
 | `spectraweaver passwd [--clear]` | Set (or remove) the password for signing in from the browser. |
