@@ -21,6 +21,16 @@ function scratch(): string {
   return dir;
 }
 
+test("host directory names are short, readable and distinct", () => {
+  expect(hostKey("gx10-aad2")).toBe("gx10-aad2");
+  expect(hostKey("node7.cluster.example.com")).toBe("node7");
+  const a = hostKey("sjc22-be105-2e9197a8-ea3f-473f-af17-8605654ee2f4-0A34AA951EB6.local");
+  const b = hostKey("sjc22-be105-2e9197a8-ea3f-473f-af17-8605654ee2f4-1B45BB062FC7.local");
+  expect(a).toHaveLength(20);
+  expect(a).not.toBe(b);
+  expect(hostKey("sjc22-be105-2e9197a8-ea3f-473f-af17-8605654ee2f4-0A34AA951EB6.local")).toBe(a);
+});
+
 test("state goes in a per-host directory, so hosts sharing an NFS home don't collide", () => {
   const base = scratch();
   const paths = resolvePaths({ XDG_CONFIG_HOME: join(base, "cfg"), XDG_STATE_HOME: join(base, "st") });

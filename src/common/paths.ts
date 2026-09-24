@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
 
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
@@ -30,8 +31,18 @@ export interface Paths {
 // sockaddr_un.sun_path is 108 bytes on Linux and 104 on macOS.
 export const MAX_SOCKET_PATH = 100;
 
-export function hostKey(): string {
-  return hostname().replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 64) || "localhost";
+const MAX_HOST_KEY = 20;
+
+/**
+ * The per-host directory name: the short host name, like `hostname -s`. Socket paths are
+ * limited to about 100 bytes and company home paths are often long, so longer names are
+ * truncated and suffixed with a hash of the full name to stay distinct.
+ */
+export function hostKey(name: string = hostname()): string {
+  const short = (name.split(".")[0] ?? "").replace(/[^A-Za-z0-9_-]/g, "_") || "localhost";
+  if (short.length <= MAX_HOST_KEY) return short;
+  const hash = createHash("sha256").update(name).digest("hex").slice(0, 7);
+  return `${short.slice(0, MAX_HOST_KEY - 8)}-${hash}`;
 }
 
 export function expandHome(path: string): string {
