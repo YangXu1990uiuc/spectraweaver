@@ -152,6 +152,7 @@ code {
 .tabs {
   flex: 1;
   min-width: 0;
+  container-type: inline-size; /* tabs share its width, see .tab */
   align-self: stretch;
   display: flex;
   align-items: flex-end;
@@ -168,14 +169,20 @@ code {
 }
 
 .tab {
-  flex: none;
+  flex: 0 1 auto;
   display: flex;
   align-items: center;
   gap: 6px;
+  /*
+   * Sized like browser tabs rather than by the name: 220px when there is room, narrower
+   * when many tabs share the strip, but never below 140px (then the strip scrolls). Long
+   * names widen their tab up to 480px while there is room.
+   */
+  min-width: clamp(140px, (100cqw - 40px) / var(--tab-count, 1) - 2px, 220px);
   max-width: 480px;
   height: 31px;
   padding: 0 6px 0 12px;
-  color: var(--muted);
+  color: #c5c5c5;
   background: #262626;
   border-top: 3px solid var(--tab-color, var(--muted));
   border-radius: 6px 6px 0 0;
@@ -189,7 +196,7 @@ code {
 }
 
 .tab.active {
-  color: var(--text);
+  color: #ffffff;
   background: #333333;
 }
 
@@ -199,8 +206,10 @@ code {
 }
 
 .tab-name {
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-weight: 600;
 }
 
 .tab-count {

@@ -86,6 +86,7 @@ export class TabStrip {
     const activeChanged = state.activeId !== this.state.activeId;
     this.state = state;
     if (this.editing) return; // don't yank the input away mid-rename
+    this.element.style.setProperty("--tab-count", String(state.tabs.length));
     const ids = new Set(state.tabs.map((tab) => tab.id));
     for (const [id, item] of this.items) {
       if (!ids.has(id)) {
