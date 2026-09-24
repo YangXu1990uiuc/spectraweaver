@@ -1,0 +1,343 @@
+/*
+ * Copyright 2026 The workstreams Authors
+ * SPDX-License-Identifier: Apache-2.0
+ * Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+ */
+
+:root {
+  --bg: #181818;
+  --panel: #1f1f1f;
+  --border: #2b2b2b;
+  --text: #cccccc;
+  --muted: #8b8b8b;
+  --accent: #0078d4;
+  --warn: #cca700;
+  --danger: #f14c4c;
+  --ok: #2ea043;
+  --topbar-h: 40px;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+#app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+button,
+select,
+input {
+  font: inherit;
+  color: var(--text);
+  background: #2a2a2a;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  padding: 3px 8px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover {
+  background: #333333;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  background: #2a2a2a;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+.error {
+  color: var(--danger);
+  min-height: 1em;
+  margin: 0;
+}
+
+/* ---- top bar ---- */
+
+.topbar {
+  height: var(--topbar-h);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  font-weight: 600;
+}
+
+.status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.status.ok {
+  background: var(--ok);
+}
+
+.status.warn {
+  background: var(--warn);
+}
+
+.status.down {
+  background: var(--danger);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.warning {
+  color: var(--warn);
+  font-size: 12px;
+  cursor: help;
+}
+
+.notice {
+  flex: none;
+  padding: 4px 10px;
+  background: #3a2f00;
+  color: #f0d060;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ---- grid ---- */
+
+.main {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+}
+
+.grid {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr));
+  grid-auto-rows: var(--row-h, 50%);
+  gap: 4px;
+  padding: 4px;
+}
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+/* ---- tile ---- */
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.tile.focused {
+  border-color: var(--accent);
+}
+
+.tile.bell {
+  border-color: var(--warn);
+}
+
+.tile-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 2px 4px 2px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.banner {
+  flex: 1 1 auto;
+  min-width: 60px;
+  padding: 2px 4px;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.banner:hover {
+  border-color: #3a3a3a;
+}
+
+.banner:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: #252525;
+}
+
+.subtitle {
+  flex: 0 1 auto;
+  max-width: 40%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.meta {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.badge {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.badge.exited {
+  background: #3a1d1d;
+  color: var(--danger);
+}
+
+.bell-dot {
+  display: none;
+  color: var(--warn);
+}
+
+.tile.bell .bell-dot {
+  display: inline;
+}
+
+.icon-btn {
+  flex: none;
+  padding: 1px 6px;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+}
+
+.icon-btn:hover {
+  color: var(--text);
+  background: #2f2f2f;
+}
+
+.tile-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+/* The terminal keeps its fixed cols x rows; it sits top-left and the rest stays blank. */
+.term-host {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* ---- dialogs, toast, login ---- */
+
+dialog {
+  min-width: 380px;
+  padding: 16px 18px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+dialog h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  color: var(--muted);
+}
+
+.field input,
+.field select {
+  color: var(--text);
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.toast {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  max-width: 420px;
+  padding: 8px 12px;
+  background: #3a1d1d;
+  border: 1px solid var(--danger);
+  border-radius: 4px;
+}
+
+.login {
+  width: 360px;
+  margin: 15vh auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.login h1 {
+  margin: 0;
+  font-size: 20px;
+}

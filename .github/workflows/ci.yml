@@ -1,0 +1,27 @@
+# Copyright 2026 The workstreams Authors
+# SPDX-License-Identifier: Apache-2.0
+# Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run check-headers
+      - run: bun test

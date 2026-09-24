@@ -1,0 +1,32 @@
+{
+  "name": "workstreams",
+  "version": "0.0.1",
+  "description": "Persistent browser terminals for running many CLI agents on a dev server",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "repository": "github:YangXu1990uiuc/workstreams",
+  "bin": {
+    "workstreams": "src/cli.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check-headers": "bun run scripts/check-headers.ts",
+    "build": "bun run scripts/build.ts"
+  },
+  "dependencies": {
+    "@xterm/addon-clipboard": "0.2.0",
+    "@xterm/addon-serialize": "0.14.0",
+    "@xterm/addon-unicode11": "0.9.0",
+    "@xterm/addon-web-links": "0.12.0",
+    "@xterm/addon-webgl": "0.19.0",
+    "@xterm/headless": "6.0.0",
+    "@xterm/xterm": "6.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
+  }
+}
