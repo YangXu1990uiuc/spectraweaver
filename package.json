@@ -14,6 +14,7 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "check-headers": "bun run scripts/check-headers.ts",
+    "install-cli": "bun run scripts/install-cli.ts",
     "build": "bun run scripts/build.ts"
   },
   "dependencies": {

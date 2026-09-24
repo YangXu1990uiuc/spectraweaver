@@ -21,7 +21,8 @@ Requires [Bun](https://bun.sh) 1.3.5 or later, on Linux or macOS.
 git clone https://github.com/YangXu1990uiuc/spectraweaver
 cd spectraweaver
 bun install
-bun run dev up
+bun run install-cli   # installs the spectraweaver command in ~/.local/bin
+spectraweaver up
 ```
 
 `up` starts the daemon and the web server in the background and prints a login link like `http://127.0.0.1:7777/#token=…`.
@@ -34,7 +35,7 @@ ssh -L 7777:localhost:7777 your-dev-server
 
 VS Code Remote's port forwarding works too. Browsers treat `localhost` as a secure context, so clipboard features work over the tunnel.
 
-**Sign in with a password instead of the link:** run `bun run dev passwd` (or use ⚙ Settings in the page), then bookmark `http://127.0.0.1:7777/`. The login page shows whose instance it is (`user @ host`) and asks for the password.
+**Sign in with a password instead of the link:** run `spectraweaver passwd` (or use ⚙ Settings in the page), then bookmark `http://127.0.0.1:7777/`. The login page shows whose instance it is (`user @ host`) and asks for the password.
 
 ## Using it
 
@@ -78,7 +79,7 @@ SpectraWeaver uses no file locks and no SQLite, the usual sources of NFS trouble
 | `spectraweaver ls` | List sessions. |
 | `spectraweaver config [state-dir PATH \| --reset]` | Show where config and state live, or move this host's state. |
 
-When running from source, use `bun run dev <command>`.
+`bun run install-cli [DIR]` installs the command as a small script in `~/.local/bin` (or `DIR`) that runs your checkout, so `git pull` updates it; run it again if you move the checkout. Without it, run `bun run dev <command>` inside the checkout.
 
 ## Upgrading
 
