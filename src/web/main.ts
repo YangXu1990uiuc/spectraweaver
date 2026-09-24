@@ -159,6 +159,10 @@ gridSelect.addEventListener("change", () => {
   if (tab && GRID_PATTERN.test(gridSelect.value)) send({ t: "tab-update", id: tab.id, grid: gridSelect.value });
 });
 new ResizeObserver(() => layoutGrid()).observe(grid);
+// Coming back to the page: the GPU may have dropped what the terminals drew meanwhile.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") for (const tile of tiles.values()) tile.terminal?.repaint();
+});
 window.addEventListener("hashchange", () => render());
 
 function gridOf(tab: TabView | null): Grid {

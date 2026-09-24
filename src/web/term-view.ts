@@ -52,6 +52,7 @@ export class TermView {
   private focused = false;
   private fitScheduled = false;
   private resizeObserver: ResizeObserver | null = null;
+  private webgl: WebglAddon | null = null;
 
   constructor(private readonly options: TermViewOptions) {
     const { session } = options;
@@ -151,6 +152,17 @@ export class TermView {
     this.options.send({ t: "sub", session: this.sessionId });
   }
 
+  /**
+   * Draws every glyph and cell again. While a page is hidden, or the computer sleeps, the GPU
+   * may lose the WebGL context or corrupt its glyph texture, which leaves the terminal blank
+   * until something redraws it (xterm.js documents clearTextureAtlas for this).
+   */
+  repaint(): void {
+    if (this.options.useWebgl && !this.webgl) this.enableWebgl(); // lost earlier: try again
+    this.term.clearTextureAtlas();
+    this.term.refresh(0, this.term.rows - 1);
+  }
+
   dispose(): void {
     if (this.focused) this.setFocused(false);
     this.resizeObserver?.disconnect();
@@ -217,8 +229,13 @@ export class TermView {
   private enableWebgl(): void {
     try {
       const addon = new WebglAddon();
-      addon.onContextLoss(() => addon.dispose());
+      addon.onContextLoss(() => {
+        // Falls back to the DOM renderer; repaint() tries WebGL again later.
+        addon.dispose();
+        if (this.webgl === addon) this.webgl = null;
+      });
       this.term.loadAddon(addon);
+      this.webgl = addon;
     } catch (error) {
       console.warn("WebGL renderer unavailable, using the DOM renderer", error);
     }
