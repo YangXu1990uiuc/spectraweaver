@@ -5,6 +5,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { TILE_COLORS } from "../src/common/protocol.ts";
 import { MetaStore } from "../src/server/meta.ts";
 import { tempPaths } from "./helpers.ts";
 
@@ -65,4 +66,36 @@ test("deleting a tab moves its sessions to the neighbour and never deletes the l
   expect(meta.deleteTab("bbbbbbbb", ["s1", "s2", "s3"])).toEqual(["s1", "s2"]);
   expect(meta.tabOf("s1")).toBe(main);
   expect(meta.deleteTab(main, ["s1"])).toBeNull();
+});
+
+test("each new terminal in a tab takes the colour its tab uses least, and keeps it", () => {
+  const { meta } = store();
+  const live: string[] = [];
+  const colors = ["s1", "s2", "s3", "s4"].map((id) => {
+    live.push(id);
+    return meta.colorOf(id, live);
+  });
+  expect(colors).toEqual(TILE_COLORS.slice(0, 4));
+  expect(meta.colorOf("s2", live)).toBe(TILE_COLORS[1]!);
+
+  // A closed terminal frees its colour for the next one.
+  meta.forget("s2");
+  live.splice(live.indexOf("s2"), 1);
+  live.push("s5");
+  expect(meta.colorOf("s5", live)).toBe(TILE_COLORS[1]!);
+});
+
+test("a terminal moved to another tab keeps its colour unless that tab already uses it", () => {
+  const { meta } = store();
+  meta.createTab({ id: "aaaaaaaa", name: "Other", color: TILE_COLORS[0]!, grid: "2x2" });
+  const live = ["s1", "s2", "o1"];
+  meta.colorOf("s1", live); // first tab: TILE_COLORS[0]
+  meta.colorOf("s2", live); // first tab: TILE_COLORS[1]
+  meta.setSessionTab("o1", "aaaaaaaa", live);
+  expect(meta.colorOf("o1", live)).toBe(TILE_COLORS[0]!); // alone in its tab
+
+  meta.setSessionTab("s2", "aaaaaaaa", live); // TILE_COLORS[1] is free there: kept
+  expect(meta.colorOf("s2", live)).toBe(TILE_COLORS[1]!);
+  meta.setSessionTab("s1", "aaaaaaaa", live); // TILE_COLORS[0] is taken by o1: recoloured
+  expect(meta.colorOf("s1", live)).toBe(TILE_COLORS[2]!);
 });

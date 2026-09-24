@@ -8,12 +8,12 @@
   --bg: #181818;
   --panel: #1f1f1f;
   --border: #2b2b2b;
-  --tile-border: #5a5a5a;
   --text: #cccccc;
   --muted: #8b8b8b;
   --accent: #0078d4;
   --link: #4daafc;
   --warn: #cca700;
+  --alert: #d13438; /* bell marks: readable on the light tints of tabs and tiles */
   --danger: #f14c4c;
   --ok: #2ea043;
   --topbar-h: 40px;
@@ -169,6 +169,8 @@ code {
 }
 
 .tab {
+  /* A light tint of the tab's colour; inactive tabs are a little dimmer and lower. */
+  --tint: color-mix(in srgb, var(--tab-color, #8b8b8b) 50%, white);
   flex: 0 1 auto;
   display: flex;
   align-items: center;
@@ -180,11 +182,10 @@ code {
    */
   min-width: clamp(140px, (100cqw - 40px) / var(--tab-count, 1) - 2px, 220px);
   max-width: 480px;
-  height: 31px;
+  height: 27px;
   padding: 0 6px 0 12px;
-  color: #c5c5c5;
-  background: #262626;
-  border-top: 3px solid var(--tab-color, var(--muted));
+  color: #1b1b1b;
+  background: color-mix(in srgb, var(--tint) 80%, var(--panel));
   border-radius: 6px 6px 0 0;
   cursor: pointer;
   user-select: none;
@@ -192,17 +193,18 @@ code {
 }
 
 .tab:hover {
-  background: #2d2d2d;
+  background: color-mix(in srgb, var(--tint) 90%, var(--panel));
 }
 
 .tab.active {
-  color: #ffffff;
-  background: #333333;
+  height: 31px;
+  color: #000000;
+  background: var(--tint);
 }
 
 .tab.drop-target {
-  outline: 1px dashed var(--link);
-  outline-offset: -2px;
+  outline: 2px dashed #1b1b1b;
+  outline-offset: -3px;
 }
 
 .tab-name {
@@ -215,19 +217,19 @@ code {
 .tab-count {
   padding: 0 6px;
   font-size: 11px;
-  color: var(--muted);
-  background: #1f1f1f;
+  color: #1b1b1b;
+  background: rgba(0, 0, 0, 0.14);
   border-radius: 8px;
 }
 
 .tab-alert {
-  color: var(--warn);
+  color: var(--alert);
 }
 
 .tab-more {
   visibility: hidden;
   padding: 0 4px;
-  color: var(--muted);
+  color: rgba(0, 0, 0, 0.6);
   background: transparent;
   border: none;
 }
@@ -349,22 +351,26 @@ code {
 /* ---- tile ---- */
 
 .tile {
+  /* A light tint of the terminal's colour, for its header and outline. */
+  --tint: color-mix(in srgb, var(--tile-color, #8b8b8b) 50%, white);
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
   background: var(--panel);
-  border: 1px solid var(--tile-border);
+  border: 1px solid var(--tint);
   border-radius: 4px;
   overflow: hidden;
 }
 
 .tile.focused {
-  border-color: var(--accent);
+  /* Twice as thick: a ring outside the border, so the terminal's area stays the same. */
+  box-shadow: 0 0 0 1px var(--tint);
 }
 
 .tile.bell {
-  border-color: var(--warn);
+  border-color: var(--alert);
+  box-shadow: 0 0 0 1px var(--alert);
 }
 
 .tile-header {
@@ -374,13 +380,14 @@ code {
   gap: 6px;
   min-height: 28px;
   padding: 2px 4px 2px 4px;
-  border-bottom: 1px solid var(--border);
+  color: #1b1b1b;
+  background: var(--tint);
 }
 
 .grip {
   flex: none;
   padding: 0 2px;
-  color: var(--muted);
+  color: rgba(0, 0, 0, 0.55);
   cursor: grab;
   user-select: none;
 }
@@ -390,18 +397,23 @@ code {
   min-width: 60px;
   padding: 2px 4px;
   font-weight: 600;
+  color: #1b1b1b;
   background: transparent;
   border: 1px solid transparent;
 }
 
+.banner::placeholder {
+  color: rgba(0, 0, 0, 0.5);
+}
+
 .banner:hover {
-  border-color: #3a3a3a;
+  border-color: rgba(0, 0, 0, 0.25);
 }
 
 .banner:focus {
   outline: none;
-  border-color: var(--accent);
-  background: #252525;
+  border-color: rgba(0, 0, 0, 0.5);
+  background: rgba(255, 255, 255, 0.55);
 }
 
 .subtitle {
@@ -410,13 +422,13 @@ code {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: var(--muted);
+  color: rgba(0, 0, 0, 0.7);
 }
 
 .meta {
   flex: none;
   font-size: 11px;
-  color: var(--muted);
+  color: rgba(0, 0, 0, 0.6);
   white-space: nowrap;
 }
 
@@ -435,7 +447,7 @@ code {
 
 .bell-dot {
   display: none;
-  color: var(--warn);
+  color: var(--alert);
 }
 
 .tile.bell .bell-dot {
@@ -453,6 +465,15 @@ code {
 .icon-btn:hover:not(:disabled) {
   color: var(--text);
   background: #2f2f2f;
+}
+
+.tile-header .icon-btn {
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.tile-header .icon-btn:hover:not(:disabled) {
+  color: #000000;
+  background: rgba(0, 0, 0, 0.12);
 }
 
 .tile-body {

@@ -225,7 +225,7 @@ export class TabStrip {
       { class: "swatches" },
       TAB_COLORS.map((color) => {
         const swatch = el("button", { class: color === tab.color ? "swatch selected" : "swatch", title: color });
-        swatch.style.background = color;
+        swatch.style.background = `color-mix(in srgb, ${color} 50%, white)`; // the tint the tab gets
         swatch.addEventListener("click", () => {
           this.closeMenu();
           this.handlers.recolor(tab.id, color);

@@ -79,6 +79,8 @@ export interface SessionView extends SessionInfo {
   banner: string;
   /** The tab (workspace) this session belongs to. */
   tab: string;
+  /** Tints the tile's header and outline; one of TILE_COLORS. */
+  color: string;
 }
 
 export interface TabView {
@@ -100,6 +102,12 @@ export const TAB_COLORS = [
   "#b180d7",
   "#e36fa8",
 ] as const;
+
+/**
+ * Terminal colours, given out in this order (least used in the tab first): the tab palette
+ * without grey, so that neighbouring tiles differ.
+ */
+export const TILE_COLORS = ["#e36fa8", "#cca700", "#3794ff", "#2ea043", "#b180d7", "#f5a623", "#26a69a", "#f14c4c"];
 
 export const GRID_PATTERN = /^[1-9]x[1-9]$/;
 

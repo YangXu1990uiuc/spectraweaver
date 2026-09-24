@@ -307,6 +307,7 @@ class Tile {
 
   update(session: SessionView): void {
     this.session = session;
+    this.root.style.setProperty("--tile-color", session.color);
     if (document.activeElement !== this.banner) this.banner.value = session.banner;
     this.subtitle.textContent = session.title;
     this.subtitle.title = session.title;

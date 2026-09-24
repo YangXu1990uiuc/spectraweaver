@@ -380,6 +380,7 @@ When a snapshot is taken, the tracker appends the sequences that re-establish th
   - the program's terminal title (OSC 0/2): Claude Code and Codex both set one, and Codex shows `[ ! ] Action Required` while it waits;
   - the last submitted prompt, from Claude Code's `UserPromptSubmit` hook.
 - **Status badge** (§8), foreground process name, cwd.
+- **Colour.** Each terminal gets a colour from the tab palette, the one least used in its tab, so neighbouring tiles differ. It is stored on the server like the banner, so every browser shows the same colours, and closing a tile never recolours the others. It tints the header and the outline; the focused tile's outline is twice as thick. Moving a terminal to another tab keeps its colour unless a terminal there already has it.
 - **All terminal-derived text is rendered as text, never as HTML** (§9).
 
 ### 6.5 Thumbnails (filmstrip cards)

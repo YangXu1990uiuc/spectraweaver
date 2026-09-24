@@ -4,11 +4,12 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { writeFileAtomic } from "../common/files.ts";
-import { GRID_PATTERN, TAB_COLORS, type TabView } from "../common/protocol.ts";
+import { GRID_PATTERN, TAB_COLORS, type TabView, TILE_COLORS } from "../common/protocol.ts";
 
 interface SessionMeta {
   banner?: string;
   tab?: string;
+  color?: string;
 }
 
 interface MetaFile {
@@ -22,8 +23,8 @@ const COLOR = /^#[0-9a-f]{6}$/i;
 const DEFAULT_TAB: TabView = { id: "00000000", name: "Main", color: "#3794ff", grid: "2x2" };
 
 /**
- * Presentational state owned by the server: tabs (workspaces) and per-session banners and
- * tab membership. There is always at least one tab; a session whose tab is missing belongs
+ * Presentational state owned by the server: tabs (workspaces) and per-session banners,
+ * colours and tab membership. There is always at least one tab; a session whose tab is missing belongs
  * to the first one.
  */
 export class MetaStore {
@@ -70,9 +71,23 @@ export class MetaStore {
     this.patchSession(sessionId, { banner });
   }
 
-  setSessionTab(sessionId: string, tabId: string): boolean {
+  /**
+   * The session's colour. The first time, it takes the colour least used by the other live
+   * sessions in its tab, so a tab's tiles differ at a glance; after that it keeps it.
+   */
+  colorOf(sessionId: string, liveIds: Iterable<string>): string {
+    const stored = this.data.sessions[sessionId]?.color;
+    if (stored) return stored;
+    const color = this.leastUsedColor(sessionId, liveIds);
+    this.patchSession(sessionId, { color });
+    return color;
+  }
+
+  /** Moves a session to a tab. It keeps its colour unless a session there already has it. */
+  setSessionTab(sessionId: string, tabId: string, liveIds: Iterable<string> = []): boolean {
     if (!this.hasTab(tabId)) return false;
     this.patchSession(sessionId, { tab: tabId });
+    this.keepColorDistinct(sessionId, [...liveIds]);
     return true;
   }
 
@@ -106,10 +121,12 @@ export class MetaStore {
     const index = this.data.tabs.findIndex((tab) => tab.id === id);
     if (index < 0 || this.data.tabs.length === 1) return null;
     const neighbour = this.data.tabs[index > 0 ? index - 1 : 1]!.id;
+    const live = [...liveSessionIds];
     const moved: string[] = [];
-    for (const sessionId of liveSessionIds) {
+    for (const sessionId of live) {
       if (this.tabOf(sessionId) === id) {
         this.patchSession(sessionId, { tab: neighbour });
+        this.keepColorDistinct(sessionId, live);
         moved.push(sessionId);
       }
     }
@@ -142,6 +159,29 @@ export class MetaStore {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = null;
     writeFileAtomic(this.file, JSON.stringify(this.data, null, 2));
+  }
+
+  private keepColorDistinct(sessionId: string, liveIds: string[]): void {
+    const color = this.data.sessions[sessionId]?.color;
+    if (!color) return;
+    const tab = this.tabOf(sessionId);
+    const taken = liveIds.some(
+      (id) => id !== sessionId && this.tabOf(id) === tab && this.data.sessions[id]?.color === color,
+    );
+    if (taken) this.patchSession(sessionId, { color: this.leastUsedColor(sessionId, liveIds) });
+  }
+
+  private leastUsedColor(sessionId: string, liveIds: Iterable<string>): string {
+    const tab = this.tabOf(sessionId);
+    const uses = new Map(TILE_COLORS.map((color) => [color, 0]));
+    for (const id of liveIds) {
+      const color = this.data.sessions[id]?.color;
+      if (id !== sessionId && color !== undefined && uses.has(color) && this.tabOf(id) === tab) {
+        uses.set(color, uses.get(color)! + 1);
+      }
+    }
+    const fewest = Math.min(...uses.values());
+    return TILE_COLORS.find((color) => uses.get(color) === fewest)!;
   }
 
   private patchSession(sessionId: string, patch: SessionMeta): void {

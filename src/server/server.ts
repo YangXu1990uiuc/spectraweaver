@@ -92,6 +92,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     ...session,
     banner: meta.banner(session.id),
     tab: meta.tabOf(session.id),
+    color: meta.colorOf(session.id, sessions.keys()),
   });
 
   const send = (client: Client, data: string | Uint8Array) => {
@@ -120,6 +121,10 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
             sessions.clear();
             for (const session of list) sessions.set(session.id, session);
             meta.prune(new Set(sessions.keys()));
+            // Sessions without a colour get one in creation order, so the result is stable.
+            for (const session of [...list].sort((a, b) => a.createdAt - b.createdAt)) {
+              meta.colorOf(session.id, sessions.keys());
+            }
             broadcast({ t: "daemon", up: true });
             broadcast({ t: "sessions", sessions: list.map(view) });
             // Browsers keep their subscriptions across a daemon reconnect; each gets a fresh snapshot.
@@ -147,7 +152,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       case "created":
         sessions.set(event.session.id, event.session);
         // Sessions created from a browser carry the tab they were created in.
-        if (event.tag) meta.setSessionTab(event.session.id, event.tag);
+        if (event.tag) meta.setSessionTab(event.session.id, event.tag, sessions.keys());
         broadcast({ t: "session", session: view(event.session) });
         return;
       case "exited": {
@@ -268,7 +273,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
             }
             // Daemons older than the tab tag don't echo it; place the session here instead.
             const id = (response.result as SessionInfo).id;
-            if (tab && meta.tabOf(id) !== tab && meta.setSessionTab(id, tab)) broadcastSession(id);
+            if (tab && meta.tabOf(id) !== tab && meta.setSessionTab(id, tab, sessions.keys())) broadcastSession(id);
           },
         );
         return;
@@ -285,7 +290,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       }
       case "session-move": {
         const id = String(message.session);
-        if (sessions.has(id) && meta.setSessionTab(id, String(message.tab))) broadcastSession(id);
+        if (sessions.has(id) && meta.setSessionTab(id, String(message.tab), sessions.keys())) broadcastSession(id);
         return;
       }
       case "tab-create":
