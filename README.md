@@ -5,7 +5,7 @@ Persistent terminals in the browser, for running many CLI coding agents on a dev
 > Status: early prototype. Expect rough edges. The plan is in [DESIGN.md](DESIGN.md).
 
 > [!WARNING]
-> SpectraWeaver puts a shell in a web page: anyone who can sign in gets a shell on your server. It listens on 127.0.0.1 only. Reach it through an SSH tunnel or a VPN, and **never expose it to the internet**. See [SECURITY.md](SECURITY.md).
+> SpectraWeaver puts a shell in a web page: anyone who can sign in gets a shell on your server. By default it listens on 127.0.0.1 only. Listen on the network only inside a network you trust, with a strong password, and **never expose it to the internet**. See [SECURITY.md](SECURITY.md).
 
 - **Sessions outlive everything but the machine.** Close the tab, lose the network, restart the web server: programs keep running on the server.
 - **Same state everywhere.** Every browser, window and device sees the same terminals, tabs and banners.
@@ -15,31 +15,74 @@ Persistent terminals in the browser, for running many CLI coding agents on a dev
 
 ## Quick start
 
-Requires [Bun](https://bun.sh) 1.3.5 or later, on Linux or macOS.
+These steps run on the dev server (Linux or macOS). You need [Bun](https://bun.sh) 1.3.5 or later: `curl -fsSL https://bun.sh/install | bash` installs it. If your home directory is small, install Bun on a bigger disk with `curl -fsSL https://bun.sh/install | BUN_INSTALL=/local/$USER/bun bash`, and clone there too.
+
+**1. Install.**
 
 ```sh
 git clone https://github.com/YangXu1990uiuc/spectraweaver
 cd spectraweaver
 bun install
-bun run install-cli   # installs the spectraweaver command in ~/.local/bin
-spectraweaver up
+bun run install-cli
 ```
 
-`up` starts the daemon and the web server in the background and prints a login link like `http://127.0.0.1:7777/#token=…`.
+`install-cli` puts the `spectraweaver` command in `~/.local/bin`. If that directory is not on your `PATH`, it prints the line to add to your shell's startup file.
 
-The server only listens on 127.0.0.1, so reach it from your laptop through SSH:
+**2. Keep state on a local disk,** if your home directory is small or on NFS. Do it before the first `up`; otherwise skip this step.
 
-- **VS Code Remote-SSH** forwards the port by itself while it is connected: open the link on your laptop as it is.
-- **Otherwise, run this on your laptop** and keep it running (Windows 10 and 11 include `ssh`; use PowerShell):
-  ```sh
-  ssh -N -L 7777:localhost:7777 your-dev-server
-  ```
-  To forward every time you connect, add `LocalForward 7777 localhost:7777` under the server's `Host` entry in `~/.ssh/config`.
-- **On a network you trust**, you can skip SSH: `spectraweaver up --host 0.0.0.0 --allow-remote` listens on every interface and prints links by this machine's name and addresses, and later `up`s remember it. This is plain HTTP: read [SECURITY.md](SECURITY.md) first.
+```sh
+spectraweaver config state-dir /local/$USER/spectraweaver
+```
 
-Browsers treat `localhost` as a secure context, so every clipboard feature works through a tunnel. Over plain `http://<server>`, Ctrl+C and Ctrl+V still work, but programs cannot copy to your clipboard (OSC 52).
+Any directory on a local disk works, such as one under `/local`, `/scratch` or `/data`. Keep the path short, because it holds the daemon's Unix socket (at most about 100 characters). The setting is saved in your home directory, so every host that shares it uses the same path, each in its own subdirectory.
 
-**Sign in with a password instead of the link:** run `spectraweaver passwd` (or use ⚙ Settings in the page), then bookmark `http://127.0.0.1:7777/`. The login page shows whose instance it is (`user @ host`) and asks for the password.
+**3. Set a password.** You sign in with it from the browser. It needs at least 8 characters.
+
+```sh
+spectraweaver passwd
+```
+
+**4. Start it.** On a network you trust, such as your company's internal network, let it listen on the network so that your laptop can open it directly:
+
+```sh
+spectraweaver up --host 0.0.0.0 --allow-remote
+```
+
+`up` remembers these options, so afterwards plain `spectraweaver up` does the same. It warns that it listens over plain HTTP, then prints the address to open:
+
+```text
+server  started at http://devbox:7778
+Bookmark http://devbox:7778/ and sign in with your password.
+If the name does not resolve there, use http://10.1.2.3:7778/
+```
+
+On a shared server, every user gets their own port (the first free one from 7777) and keeps it.
+
+To stay off the network, run plain `spectraweaver up` and reach it through SSH instead (see [Reaching it from your laptop](#reaching-it-from-your-laptop)).
+
+**5. Open it on your laptop.** Open the address, sign in, and bookmark it. A normal browser tab keeps Ctrl+W, Ctrl+T and Ctrl+N for itself; for them to reach the terminal, open the page as an app window. On Windows, press Win+R and run:
+
+```text
+msedge --app=http://devbox:7778/
+```
+
+For a desktop shortcut, give the full path: `"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --app=http://devbox:7778/`. Chrome works the same way (`chrome --app=…`), as does `google-chrome --app=…` on Linux.
+
+Closing the browser leaves everything running. After the server reboots, run `spectraweaver up` again. To update, see [Upgrading](#upgrading).
+
+### Reaching it from your laptop
+
+- **Listening on the network** (step 4) needs the least setup, but it is plain HTTP: anyone who can watch the network can read your password and your terminals. Use it only on a network you trust. Ctrl+C and Ctrl+V work, but programs cannot copy to your clipboard (OSC 52), which needs HTTPS or `localhost`.
+- **An SSH tunnel** keeps the server on 127.0.0.1 (plain `spectraweaver up`). Use the port that `up` printed:
+  - **VS Code Remote-SSH** forwards the port by itself while it is connected: open the link on your laptop as it is.
+  - **Otherwise, run this on your laptop** and keep it running (Windows 10 and 11 include `ssh`; use PowerShell):
+    ```sh
+    ssh -N -L 7777:localhost:7777 your-dev-server
+    ```
+    To forward every time you connect, add `LocalForward 7777 localhost:7777` under the server's `Host` entry in `~/.ssh/config`.
+  - Browsers treat `localhost` as a secure context, so every clipboard feature works through a tunnel.
+- **Switching back** to localhost only: `spectraweaver down && spectraweaver up --host 127.0.0.1`.
+- **Without a password,** `up` prints a sign-in link with a token instead; `spectraweaver token` prints it again.
 
 ## Using it
 
@@ -54,17 +97,17 @@ Browsers treat `localhost` as a secure context, so every clipboard feature works
   - Windows: Ctrl+C copies when text is selected (otherwise it interrupts the program), and Ctrl+V pastes.
   - Linux: Ctrl+Shift+C and Ctrl+Shift+V.
   - macOS: Cmd+C and Cmd+V.
-- **Browser shortcuts:** open the page as an app window (install it as an app in Chrome/Edge, or launch with `--app=URL`). A normal browser tab keeps Ctrl+W, Ctrl+T and Ctrl+N for itself, so they never reach the terminal.
+- **Browser shortcuts:** a normal browser tab keeps Ctrl+W, Ctrl+T and Ctrl+N for itself, so they never reach the terminal. Open the page as an app window instead: launch the browser with `--app=URL` (Quick start, step 5), or, over an SSH tunnel, install the page as an app in Chrome or Edge.
 
 ## Shared servers, small or NFS home directories
 
 Every user runs their own instance. The first `up` picks the first free port from 7777 and remembers it, so your bookmark keeps working; use `--port N` to choose one. Sign-in is required even on localhost, because other users on the machine can reach 127.0.0.1.
 
-Only a few kilobytes live in your home directory (`~/.config/spectraweaver`: the token, the password hash and settings), shared by all your hosts, so one password works everywhere. Everything else is per host, in `~/.local/state/spectraweaver/<hostname>/`, so several servers sharing an NFS home never step on each other. If your home directory is small, or you'd rather keep state off NFS, move it:
+Only a few kilobytes live in your home directory (`~/.config/spectraweaver`: the token, the password hash and settings), shared by all your hosts, so one password works everywhere. Everything else is per host, in `~/.local/state/spectraweaver/<hostname>/` or under the directory set with `config state-dir` (Quick start, step 2), so several servers sharing an NFS home never step on each other. Moving state later requires stopping everything, which ends every session:
 
 ```sh
-spectraweaver down --all                                # moving state requires a stop
-spectraweaver config state-dir /local/$USER/spectraweaver # any local or bigger disk
+spectraweaver down --all
+spectraweaver config state-dir /local/$USER/spectraweaver
 spectraweaver up
 ```
 
@@ -87,7 +130,14 @@ SpectraWeaver uses no file locks and no SQLite, the usual sources of NFS trouble
 
 ## Upgrading
 
-Restarting the web server (`down`, then `up`) is safe and picks up new UI and server code; sessions keep running. The daemon is only replaced by `down --all`, which ends every session, so do that when nothing important is running.
+```sh
+cd spectraweaver
+git pull
+bun install
+spectraweaver down && spectraweaver up
+```
+
+Then reload the page. This restarts only the web server, which picks up the new UI and server code; sessions keep running. The daemon is replaced only by `spectraweaver down --all`, which ends every session, so do that when nothing important is running.
 
 ## How it works
 
