@@ -41,6 +41,16 @@ export class TabStrip {
     const add = el("button", { class: "tab-add", title: "New tab" }, ["+"]);
     add.addEventListener("click", () => handlers.create());
     this.element = el("div", { class: "tabs" }, [this.list, add]);
+    // A plain mouse wheel scrolls the tab strip sideways when tabs overflow.
+    this.list.addEventListener(
+      "wheel",
+      (event) => {
+        if (event.deltaX !== 0 || this.list.scrollWidth <= this.list.clientWidth) return;
+        event.preventDefault();
+        this.list.scrollLeft += event.deltaY;
+      },
+      { passive: false },
+    );
     document.addEventListener(
       "pointerdown",
       (event) => {
@@ -140,7 +150,7 @@ export class TabStrip {
     if (!item || !tab) return;
     this.closeMenu();
     this.editing = id;
-    const input = el("input", { class: "tab-rename", value: tab.name, maxlength: "40", spellcheck: "false" });
+    const input = el("input", { class: "tab-rename", value: tab.name, maxlength: "60", spellcheck: "false" });
     item.draggable = false;
     item.replaceChildren(input);
     input.focus();

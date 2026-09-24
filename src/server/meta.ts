@@ -156,5 +156,5 @@ export class MetaStore {
 }
 
 function cleanName(name: string): string {
-  return String(name).replace(/\s+/g, " ").trim().slice(0, 40);
+  return String(name).replace(/\s+/g, " ").trim().slice(0, 60);
 }

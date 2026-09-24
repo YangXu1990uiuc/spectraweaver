@@ -172,7 +172,7 @@ code {
   display: flex;
   align-items: center;
   gap: 6px;
-  max-width: 240px;
+  max-width: 480px;
   height: 31px;
   padding: 0 6px 0 12px;
   color: var(--muted);
@@ -229,7 +229,7 @@ code {
 }
 
 .tab-rename {
-  width: 140px;
+  width: 280px;
   padding: 1px 4px;
 }
 
