@@ -10,7 +10,9 @@ export interface Paths {
   configDir: string;
   stateDir: string;
   daemonSocket: string;
+  configFile: string;
   tokenFile: string;
+  passwordFile: string;
   metaFile: string;
   daemonPidFile: string;
   serverPidFile: string;
@@ -40,7 +42,9 @@ export function resolvePaths(env: Record<string, string | undefined> = process.e
     configDir,
     stateDir,
     daemonSocket,
+    configFile: join(configDir, "config.json"),
     tokenFile: join(configDir, "auth.token"),
+    passwordFile: join(configDir, "password"),
     metaFile: join(stateDir, "meta.json"),
     daemonPidFile: join(stateDir, "daemon.pid"),
     serverPidFile: join(stateDir, "server.pid"),

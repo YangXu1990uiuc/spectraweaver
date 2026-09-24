@@ -6,151 +6,114 @@ import "@xterm/xterm/css/xterm.css";
 import {
   type ClientMessage,
   decodeOutputPayload,
+  GRID_PATTERN,
   type ServerMessage,
   type SessionView,
+  TAB_COLORS,
+  type TabView,
 } from "../common/protocol.ts";
+import { el, formatGrid, type Grid, loadSetting, parseGrid, randomId, saveSetting } from "./dom.ts";
 import { detectPlatform } from "./keymap.ts";
-import { TermView } from "./term-view.ts";
+import { createSettingsDialog, ensureLogin } from "./login.ts";
+import { createNewTerminalDialog } from "./new-dialog.ts";
+import { measureFont } from "./sizing.ts";
+import { SESSION_DRAG_TYPE, TabStrip } from "./tabs.ts";
+import { FONT_FAMILY, TermView } from "./term-view.ts";
 
 const platform = detectPlatform();
-const GRID_PRESETS = ["1x1", "2x1", "2x2", "3x2", "4x2", "3x3", "4x3"];
-const SIZE_PRESETS = ["80x24", "100x30", "120x36", "160x48"];
+// Matrix order, rows x columns: "2x3" is 2 rows of 3 tiles.
+const GRID_PRESETS = ["1x1", "1x2", "1x3", "2x2", "2x3", "2x4", "3x3", "3x4"];
 // Browsers cap live WebGL contexts per page (about 16 in Chrome); later tiles use the DOM renderer.
 const MAX_WEBGL_TILES = 12;
 const GRID_GAP = 4;
+const TILE_BORDER = 1;
 
 const sessions = new Map<string, SessionView>();
+let tabs: TabView[] = [];
 const tiles = new Map<string, Tile>();
+/** Sessions that rang the bell since this browser last looked at them. */
+const belled = new Set<string>();
 let socket: WebSocket | null = null;
 let connected = false;
 let daemonUp = false;
 let reconnectDelay = 250;
 let createdHereAt = 0;
 
-// ---- small DOM helper ------------------------------------------------------------------
-
-function el<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  attrs: Record<string, string> = {},
-  children: Array<Node | string> = [],
-): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
-  for (const [name, value] of Object.entries(attrs)) node.setAttribute(name, value);
-  node.append(...children);
-  return node;
-}
-
-function loadSetting(key: string, fallback: string): string {
-  try {
-    return localStorage.getItem(`workstreams.${key}`) ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function saveSetting(key: string, value: string): void {
-  try {
-    localStorage.setItem(`workstreams.${key}`, value);
-  } catch {
-    // Storage unavailable; the setting just won't persist.
-  }
-}
-
-function parseSize(text: string): [number, number] | null {
-  const match = /^\s*(\d+)\s*[x×]\s*(\d+)\s*$/i.exec(text);
-  return match ? [Number(match[1]), Number(match[2])] : null;
-}
-
 function send(message: ClientMessage): void {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
 }
 
-function focusedSessionId(): string | null {
-  return new URLSearchParams(location.hash.slice(1)).get("s");
+// ---- routing: #t=<tab> shows a tab, #s=<session> focuses one terminal --------------------
+
+interface View {
+  tab: TabView | null;
+  focus: string | null;
 }
 
-// ---- login -----------------------------------------------------------------------------
-
-const app = document.getElementById("app") as HTMLDivElement;
-
-async function login(token: string): Promise<boolean> {
-  const response = await fetch("/api/login", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token }),
-  });
-  return response.ok;
-}
-
-async function isLoggedIn(): Promise<boolean> {
-  try {
-    return (await fetch("/api/me")).ok;
-  } catch {
-    return false;
-  }
-}
-
-async function ensureLogin(): Promise<void> {
+function currentView(): View {
   const params = new URLSearchParams(location.hash.slice(1));
-  const token = params.get("token");
-  if (token) {
-    // Take the token out of the address bar and history before anything else.
-    params.delete("token");
-    const rest = params.toString();
-    history.replaceState(null, "", `${location.pathname}${location.search}${rest ? `#${rest}` : ""}`);
-    await login(token);
+  const focus = params.get("s");
+  if (focus) {
+    const tabId = sessions.get(focus)?.tab ?? params.get("t");
+    return { tab: tabs.find((tab) => tab.id === tabId) ?? tabs[0] ?? null, focus };
   }
-  while (!(await isLoggedIn())) await showLoginForm();
+  const wanted = params.get("t") ?? loadSetting("lastTab", "");
+  return { tab: tabs.find((tab) => tab.id === wanted) ?? tabs[0] ?? null, focus: null };
 }
 
-function showLoginForm(): Promise<void> {
-  return new Promise((resolve) => {
-    const input = el("input", { type: "password", placeholder: "token", autocomplete: "current-password" });
-    const error = el("p", { class: "error" });
-    const form = el("form", { class: "login" }, [
-      el("h1", {}, ["workstreams"]),
-      el("p", {}, [
-        "Paste the token printed by ",
-        el("code", {}, ["workstreams up"]),
-        " (or run ",
-        el("code", {}, ["workstreams token"]),
-        ").",
-      ]),
-      input,
-      el("button", { type: "submit", class: "primary" }, ["Sign in"]),
-      error,
-    ]);
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      void login(input.value.trim()).then((ok) => {
-        if (ok) {
-          form.remove();
-          resolve();
-        } else {
-          error.textContent = "That token is not valid.";
-        }
-      });
-    });
-    app.replaceChildren(form);
-    input.focus();
-  });
+function showTab(id: string): void {
+  location.hash = `t=${id}`;
 }
 
 // ---- chrome ----------------------------------------------------------------------------
 
+const app = document.getElementById("app") as HTMLDivElement;
 const statusDot = el("span", { class: "status down", title: "Connecting…" });
-const backButton = el("button", { class: "back", hidden: "" }, ["← All terminals"]);
 const gridSelect = el(
   "select",
-  { title: "Grid layout (columns × rows per screen)" },
-  GRID_PRESETS.map((preset) => el("option", { value: preset }, [preset.replace("x", " × ")])),
+  { title: "Tiles per screen in this tab: rows × columns" },
+  GRID_PRESETS.map((preset) => el("option", { value: preset }, [formatGrid(parseGrid(preset)!)])),
 );
 const newButton = el("button", { class: "primary" }, ["+ New terminal"]);
+const settingsButton = el("button", { class: "icon-btn settings-btn", title: "Settings" }, ["⚙"]);
+const notice = el("div", { class: "notice", hidden: "" });
+const grid = el("main", { class: "grid" });
+const empty = el("div", { class: "empty", hidden: "" });
+const toastBox = el("div", { class: "toast", hidden: "" });
+const favicon = el("link", { rel: "icon" });
+document.head.appendChild(favicon);
+
+const tabStrip = new TabStrip({
+  select: (id) => showTab(id),
+  create: () => {
+    const id = randomId();
+    const color = TAB_COLORS[(tabs.length + 6) % TAB_COLORS.length]!;
+    send({ t: "tab-create", id, name: `Tab ${tabs.length + 1}`, color, grid: currentView().tab?.grid ?? "2x2" });
+    tabStrip.renameOnArrival(id);
+    showTab(id);
+  },
+  rename: (id, name) => send({ t: "tab-update", id, name }),
+  recolor: (id, color) => send({ t: "tab-update", id, color }),
+  remove: (id) => {
+    const index = tabs.findIndex((tab) => tab.id === id);
+    const tab = tabs[index];
+    if (!tab || tabs.length <= 1) return;
+    const neighbour = tabs[index > 0 ? index - 1 : 1]!;
+    const count = [...sessions.values()].filter((session) => session.tab === id).length;
+    const moved = count > 0 ? ` Its ${count} terminal${count === 1 ? "" : "s"} will move to “${neighbour.name}”.` : "";
+    if (!confirm(`Delete tab “${tab.name}”?${moved}`)) return;
+    send({ t: "tab-delete", id });
+    if (currentView().tab?.id === id) showTab(neighbour.id);
+  },
+  move: (id, index) => send({ t: "tab-move", id, index }),
+  openInWindow: (id) => window.open(`${location.pathname}#t=${id}`, "_blank"),
+  moveSession: (sessionId, tabId) => send({ t: "session-move", session: sessionId, tab: tabId }),
+});
+
 const topbar = el("header", { class: "topbar" }, [
   el("span", { class: "brand" }, ["workstreams"]),
   statusDot,
-  backButton,
-  el("span", { class: "spacer" }),
+  tabStrip.element,
 ]);
 if (!window.isSecureContext) {
   topbar.append(
@@ -166,39 +129,7 @@ if (!window.isSecureContext) {
     ),
   );
 }
-topbar.append(gridSelect, newButton);
-
-const notice = el("div", { class: "notice", hidden: "" });
-const grid = el("main", { class: "grid" });
-const empty = el("div", { class: "empty", hidden: "" });
-const toastBox = el("div", { class: "toast", hidden: "" });
-
-gridSelect.value = loadSetting("grid", "2x2");
-gridSelect.addEventListener("change", () => {
-  saveSetting("grid", gridSelect.value);
-  layoutGrid();
-});
-backButton.addEventListener("click", () => {
-  location.hash = "";
-});
-new ResizeObserver(() => layoutGrid()).observe(grid);
-window.addEventListener("hashchange", () => render());
-
-function layoutGrid(): void {
-  const focusMode = focusedSessionId() !== null;
-  const [cols, rows] = focusMode ? [1, 1] : (parseSize(gridSelect.value) ?? [2, 2]);
-  const available = grid.clientHeight - 2 * GRID_GAP - (rows - 1) * GRID_GAP;
-  grid.style.setProperty("--cols", String(cols));
-  grid.style.setProperty("--row-h", `${Math.max(80, Math.floor(available / rows))}px`);
-}
-
-function setStatus(): void {
-  statusDot.className = `status ${connected ? (daemonUp ? "ok" : "warn") : "down"}`;
-  statusDot.title = connected ? (daemonUp ? "Connected" : "Daemon not running") : "Reconnecting…";
-  if (!connected) notice.textContent = "Connection to the server lost. Reconnecting…";
-  else if (!daemonUp) notice.textContent = "The daemon is not running. Start it with `workstreams up`.";
-  notice.hidden = connected && daemonUp;
-}
+topbar.append(gridSelect, newButton, settingsButton);
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 function toast(message: string): void {
@@ -210,80 +141,72 @@ function toast(message: string): void {
   }, 5000);
 }
 
-function updateDocumentTitle(): void {
-  const waiting = [...tiles.values()].filter((tile) => tile.belled).length;
-  document.title = waiting > 0 ? `(${waiting}) workstreams` : "workstreams";
+const settings = createSettingsDialog(toast);
+settingsButton.addEventListener("click", () => settings.open());
+
+gridSelect.addEventListener("change", () => {
+  const tab = currentView().tab;
+  if (tab && GRID_PATTERN.test(gridSelect.value)) send({ t: "tab-update", id: tab.id, grid: gridSelect.value });
+});
+new ResizeObserver(() => layoutGrid()).observe(grid);
+window.addEventListener("hashchange", () => render());
+
+function gridOf(tab: TabView | null): Grid {
+  return parseGrid(tab?.grid ?? "") ?? { rows: 2, cols: 2 };
 }
 
-// ---- new-terminal dialog ---------------------------------------------------------------
+function layoutGrid(): void {
+  const view = currentView();
+  const { rows, cols } = view.focus ? { rows: 1, cols: 1 } : gridOf(view.tab);
+  const available = grid.clientHeight - 2 * GRID_GAP - (rows - 1) * GRID_GAP;
+  grid.style.setProperty("--cols", String(cols));
+  grid.style.setProperty("--row-h", `${Math.max(80, Math.floor(available / rows))}px`);
+}
 
-const sizeSelect = el(
-  "select",
-  {},
-  [...SIZE_PRESETS, "custom"].map((preset) =>
-    el("option", { value: preset }, [preset === "custom" ? "Custom…" : preset.replace("x", " × ")]),
-  ),
-);
-const customSize = el("input", { placeholder: "cols x rows, e.g. 132x50", hidden: "" });
-const cwdInput = el("input", { placeholder: "~ (home)", spellcheck: "false" });
-const cmdInput = el("input", { placeholder: "optional, e.g. claude", spellcheck: "false" });
-const dialogError = el("p", { class: "error" });
-const dialogForm = el("form", { method: "dialog" }, [
-  el("h2", {}, ["New terminal"]),
-  el("label", { class: "field" }, [
-    "Size (fixed for the life of the terminal)",
-    sizeSelect,
-    customSize,
-  ]),
-  el("label", { class: "field" }, ["Working directory", cwdInput]),
-  el("label", { class: "field" }, ["Startup command", cmdInput]),
-  dialogError,
-  el("div", { class: "actions" }, [
-    el("button", { type: "button", value: "cancel", class: "cancel" }, ["Cancel"]),
-    el("button", { type: "submit", class: "primary" }, ["Create"]),
-  ]),
-]);
-const newDialog = el("dialog", { class: "new-dialog" }, [dialogForm]);
+/** The terminal area of one tile in the current tab's grid (even when focused on one). */
+function tileArea(): { area: { width: number; height: number }; grid: Grid } {
+  const layout = gridOf(currentView().tab);
+  const header = document.querySelector(".tile-header")?.getBoundingClientRect().height ?? 29;
+  const width = (grid.clientWidth - 2 * GRID_GAP - (layout.cols - 1) * GRID_GAP) / layout.cols - 2 * TILE_BORDER;
+  const rowHeight = Math.max(
+    80,
+    Math.floor((grid.clientHeight - 2 * GRID_GAP - (layout.rows - 1) * GRID_GAP) / layout.rows),
+  );
+  return { area: { width, height: rowHeight - header - 2 * TILE_BORDER }, grid: layout };
+}
 
-sizeSelect.addEventListener("change", () => {
-  customSize.hidden = sizeSelect.value !== "custom";
+const newDialog = createNewTerminalDialog({
+  tile: tileArea,
+  font: () => measureFont(FONT_FAMILY),
+  create: (request) => {
+    createdHereAt = Date.now();
+    send({ t: "create", ...request, tab: currentView().tab?.id });
+  },
 });
-dialogForm.querySelector(".cancel")?.addEventListener("click", () => newDialog.close());
-newButton.addEventListener("click", () => {
-  const lastSize = loadSetting("size", "120x36");
-  sizeSelect.value = SIZE_PRESETS.includes(lastSize) ? lastSize : "custom";
-  customSize.value = SIZE_PRESETS.includes(lastSize) ? "" : lastSize;
-  customSize.hidden = sizeSelect.value !== "custom";
-  cwdInput.value = loadSetting("cwd", "");
-  cmdInput.value = "";
-  dialogError.textContent = "";
-  newDialog.showModal();
-});
-dialogForm.addEventListener("submit", (event) => {
-  const sizeText = sizeSelect.value === "custom" ? customSize.value : sizeSelect.value;
-  const size = parseSize(sizeText);
-  if (!size || size[0] < 2 || size[1] < 1 || size[0] > 1000 || size[1] > 500) {
-    event.preventDefault();
-    dialogError.textContent = "Size must look like 120x36.";
-    return;
-  }
-  saveSetting("size", `${size[0]}x${size[1]}`);
-  saveSetting("cwd", cwdInput.value.trim());
-  createdHereAt = Date.now();
-  send({
-    t: "create",
-    cols: size[0],
-    rows: size[1],
-    cwd: cwdInput.value.trim() || undefined,
-    cmd: cmdInput.value.trim() || undefined,
-  });
-});
+newButton.addEventListener("click", () => newDialog.open());
+
+function setStatus(): void {
+  statusDot.className = `status ${connected ? (daemonUp ? "ok" : "warn") : "down"}`;
+  statusDot.title = connected ? (daemonUp ? "Connected" : "Daemon not running") : "Reconnecting…";
+  if (!connected) notice.textContent = "Connection to the server lost. Reconnecting…";
+  else if (!daemonUp) notice.textContent = "The daemon is not running. Start it with `workstreams up`.";
+  notice.hidden = connected && daemonUp;
+}
+
+/** Browser-tab title and icon show the workspace, so several open windows are easy to tell apart. */
+function updateWindowIdentity(tab: TabView | null): void {
+  const waiting = belled.size;
+  document.title = `${waiting > 0 ? `(${waiting}) ` : ""}${tab ? `${tab.name} · ` : ""}workstreams`;
+  const color = tab?.color ?? "#3794ff";
+  const dot = waiting > 0 ? '<circle cx="12" cy="4" r="3.5" fill="#cca700" stroke="#1f1f1f" stroke-width="1"/>' : "";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="12" rx="3" fill="${color}"/><path d="M4 6l2.5 2L4 10M8 10h4" stroke="#1f1f1f" stroke-width="1.5" fill="none"/>${dot}</svg>`;
+  favicon.href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
 
 // ---- tiles -----------------------------------------------------------------------------
 
 class Tile {
   readonly root: HTMLElement;
-  belled = false;
   private view: TermView | null = null;
   private session: SessionView;
   private readonly body: HTMLDivElement;
@@ -295,6 +218,7 @@ class Tile {
 
   constructor(session: SessionView) {
     this.session = session;
+    const grip = el("span", { class: "grip", draggable: "true", title: "Drag onto a tab to move this terminal" }, ["⠿"]);
     this.banner = el("input", { class: "banner", placeholder: "What is this terminal doing?", spellcheck: "false" });
     this.subtitle = el("span", { class: "subtitle" });
     this.size = el("span", { class: "meta" });
@@ -305,6 +229,7 @@ class Tile {
     this.body = el("div", { class: "tile-body" });
     this.root = el("section", { class: "tile" }, [
       el("div", { class: "tile-header" }, [
+        grip,
         el("span", { class: "bell-dot", title: "Wants attention" }, ["●"]),
         this.banner,
         this.subtitle,
@@ -317,6 +242,10 @@ class Tile {
       this.body,
     ]);
 
+    grip.addEventListener("dragstart", (event) => {
+      event.dataTransfer?.setData(SESSION_DRAG_TYPE, this.session.id);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    });
     this.banner.addEventListener("change", () => {
       send({ t: "banner", session: this.session.id, banner: this.banner.value.trim() });
     });
@@ -332,7 +261,8 @@ class Tile {
       }
     });
     this.focusButton.addEventListener("click", () => {
-      location.hash = focusedSessionId() === this.session.id ? "" : `s=${this.session.id}`;
+      if (currentView().focus === this.session.id) showTab(this.session.tab);
+      else location.hash = `s=${this.session.id}`;
     });
     windowButton.addEventListener("click", () => {
       window.open(`${location.pathname}#s=${this.session.id}`, "_blank");
@@ -354,7 +284,7 @@ class Tile {
       send,
       onFocusChange: (focused) => {
         this.root.classList.toggle("focused", focused);
-        if (focused) this.clearBell();
+        if (focused && belled.delete(this.session.id)) render();
       },
     });
     this.view.mount(this.body);
@@ -375,21 +305,8 @@ class Tile {
     const exited = session.exited;
     this.exitBadge.hidden = !exited;
     if (exited) this.exitBadge.textContent = exited.signal ? `exited (${exited.signal})` : `exited ${exited.code ?? ""}`;
-    this.focusButton.textContent = focusedSessionId() === session.id ? "⤡" : "⤢";
-  }
-
-  bell(): void {
-    if (this.view?.hasFocus) return;
-    this.belled = true;
-    this.root.classList.add("bell");
-    updateDocumentTitle();
-  }
-
-  clearBell(): void {
-    if (!this.belled) return;
-    this.belled = false;
-    this.root.classList.remove("bell");
-    updateDocumentTitle();
+    this.focusButton.textContent = currentView().focus === session.id ? "⤡" : "⤢";
+    this.root.classList.toggle("bell", belled.has(session.id));
   }
 
   dispose(): void {
@@ -400,9 +317,26 @@ class Tile {
 }
 
 function render(): void {
-  const focusId = focusedSessionId();
+  const view = currentView();
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (view.tab) {
+    // Show the tab's own URL in the address bar (bookmarkable), without a history entry.
+    if (!view.focus && !params.has("t")) history.replaceState(null, "", `${location.pathname}#t=${view.tab.id}`);
+    saveSetting("lastTab", view.tab.id);
+  }
+
+  const counts = new Map<string, number>();
+  const alerts = new Set<string>();
+  for (const session of sessions.values()) {
+    counts.set(session.tab, (counts.get(session.tab) ?? 0) + 1);
+    if (belled.has(session.id)) alerts.add(session.tab);
+  }
+  tabStrip.render({ tabs, activeId: view.tab?.id ?? null, counts, alerts });
+
   const ordered = [...sessions.values()].sort((a, b) => a.createdAt - b.createdAt);
-  const visible = focusId ? ordered.filter((session) => session.id === focusId) : ordered;
+  const visible = view.focus
+    ? ordered.filter((session) => session.id === view.focus)
+    : ordered.filter((session) => session.tab === view.tab?.id);
   const visibleIds = new Set(visible.map((session) => session.id));
 
   for (const [id, tile] of tiles) {
@@ -431,13 +365,14 @@ function render(): void {
     }
   });
 
-  backButton.hidden = !focusId;
+  if (view.tab) gridSelect.value = view.tab.grid;
+  gridSelect.disabled = view.focus !== null;
   empty.hidden = visible.length > 0;
-  empty.textContent = focusId
+  empty.textContent = view.focus
     ? "This terminal no longer exists."
-    : "No terminals yet. Create one with “+ New terminal”.";
+    : "No terminals in this tab yet. Create one with “+ New terminal”, or drag one here onto the tab.";
   layoutGrid();
-  updateDocumentTitle();
+  updateWindowIdentity(view.tab);
 }
 
 // ---- connection ------------------------------------------------------------------------
@@ -450,9 +385,14 @@ function onServerMessage(message: ServerMessage): void {
       daemonUp = message.up;
       setStatus();
       return;
+    case "tabs":
+      tabs = message.tabs;
+      render();
+      return;
     case "sessions":
       sessions.clear();
       for (const session of message.sessions) sessions.set(session.id, session);
+      for (const id of belled) if (!sessions.has(id)) belled.delete(id);
       render();
       return;
     case "session":
@@ -461,13 +401,16 @@ function onServerMessage(message: ServerMessage): void {
       return;
     case "removed":
       sessions.delete(message.session);
+      belled.delete(message.session);
       render();
       return;
     case "snapshot":
       tiles.get(message.snapshot.session)?.terminal?.applySnapshot(message.snapshot);
       return;
     case "bell":
-      tiles.get(message.session)?.bell();
+      if (tiles.get(message.session)?.terminal?.hasFocus) return;
+      belled.add(message.session);
+      render();
       return;
     case "error":
       toast(message.message);
@@ -508,7 +451,7 @@ async function reconnect(): Promise<void> {
   try {
     const response = await fetch("/api/me");
     if (response.status === 401) {
-      await ensureLogin();
+      await ensureLogin(app);
       showApp();
     } else if (!response.ok) {
       throw new Error(`server answered ${response.status}`);
@@ -522,11 +465,11 @@ async function reconnect(): Promise<void> {
 
 function showApp(): void {
   const main = el("div", { class: "main" }, [grid, empty]);
-  app.replaceChildren(topbar, notice, main, newDialog, toastBox);
+  app.replaceChildren(topbar, notice, main, newDialog.element, settings.element, toastBox);
   setStatus();
   render();
 }
 
-await ensureLogin();
+await ensureLogin(app);
 showApp();
 connect();

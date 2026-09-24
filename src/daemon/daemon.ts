@@ -91,7 +91,8 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
       });
       sessions.set(id, session);
       log(`session ${id} created (${cols}x${rows}, pid ${session.info().pid})`);
-      broadcast({ type: "created", session: session.info() });
+      const tag = typeof request.tag === "string" ? request.tag.slice(0, 64) : undefined;
+      broadcast({ type: "created", session: session.info(), tag });
       return session;
     },
     close(id) {
@@ -142,7 +143,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
 interface DaemonContext {
   log: (message: string) => void;
   sessions: Map<string, Session>;
-  create(request: { cols: number; rows: number; cwd?: string; cmd?: string }): Session;
+  create(request: { cols: number; rows: number; cwd?: string; cmd?: string; tag?: string }): Session;
   close(id: string): void;
 }
 

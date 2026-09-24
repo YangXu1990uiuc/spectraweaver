@@ -39,9 +39,9 @@ It is built for running many CLI coding agents in parallel (Claude Code, Codex C
 
 ### 1.4 A day with workstreams
 
-1. **Start it.** On the server, `workstreams up` starts the daemon and the server and prints a one-time login link.
+1. **Start it.** On the server, `workstreams up` starts the daemon and the server and prints a login link. After setting a password (`workstreams passwd`, or in Settings), a bookmark of the plain URL is enough.
 2. **Open it.** Open the link through an SSH tunnel or HTTPS, preferably as an app window (§6.3).
-3. **Create sessions.** Click "New terminal" (size preset, cwd, optional startup command). A tile appears; give it a banner: "auth refactor".
+3. **Create sessions.** Make a tab per workstream, such as "agents" and "infra", each with its own grid and URL. Click "New terminal": the size is pre-filled to fit the tab's grid; add a working directory and an optional startup command. A tile appears; give it a banner: "auth refactor".
 4. **Switch devices.** Run `claude` in a few tiles, close the laptop, and open the page on the desktop. Everything is where it was. One tile shows **needs input**; click it and answer.
 5. **Survive a reboot.** After a server reboot, dead sessions show their last screen with a **Revive** button, which runs `claude --resume <id>` in the same directory.
 
@@ -105,13 +105,14 @@ One binary provides both processes plus the CLI (§11): `workstreams daemon`, `w
 
 ### 3.3 State locations
 
-- **Config:** `$XDG_CONFIG_HOME/workstreams/` (default `~/.config/workstreams/`) holds:
-  - `config.toml`;
-  - `auth.token`, mode 0600.
+- **Config:** `$XDG_CONFIG_HOME/workstreams/` (default `~/.config/workstreams/`) holds, all mode 0600:
+  - `config.json`: the instance id (names the login cookie) and the remembered port and host;
+  - `auth.token`;
+  - `password`: an argon2id hash, present only if a password is set.
 - **State:** `$XDG_STATE_HOME/workstreams/` (default `~/.local/state/workstreams/`) holds:
   - `daemon.sock`, and optionally `server.sock`;
-  - `workstreams.db`;
-  - `sessions/<id>/`, with log segments and the last snapshot.
+  - `meta.json`: tabs, banners and which tab each session belongs to;
+  - `sessions/<id>/`, with log segments and the last snapshot (later).
 - **Why not `$XDG_RUNTIME_DIR`:** without linger, it is deleted when the user's last login session ends.
 - **Permissions:** directories 0700, sockets 0600.
 
@@ -174,12 +175,12 @@ Nothing a viewer does sends a resize to the PTY:
 
 ### 4.3 Choosing a size
 
-- **Global default.** Settings hold a default size chosen by the user. Presets are 80×24, 100×30, 120×36 and 160×48, or a custom size. The size is not computed automatically.
-- **New-session dialog.**
-  - It shows the default and allows an override.
-  - It previews how the size fits the current tile shape.
-  - Rule of thumb: a cell is about 1:2, so a terminal's aspect ratio is about `cols ÷ (2 × rows)`.
-  - Example: a 4×2 grid on a 16:9 screen gives tiles with an aspect of about 0.89. 100×56 fills such a tile; 120×36 leaves about 47% of it blank.
+- **Pre-filled, never forced.** The new-terminal dialog has two number fields, columns and rows, pre-filled with a recommendation. The user edits the numbers directly.
+- **The recommendation** is the shape of one tile in the current tab's grid at the user's preferred text size.
+  - The preferred text size starts at 13 px. Each time a terminal is created, the text size its chosen size implies becomes the new preference, so recommendations follow the user across layouts.
+  - Cells are modelled the way xterm.js's WebGL renderer draws them: glyph advance and line height scale with the font size, then snap to whole device pixels (width down, height up). Ignoring the snapping overestimates the width by up to a pixel per column.
+  - A live hint shows the resulting text size and how much of the tile the terminal fills.
+- **Why shape matters.** A cell is about 1:2, so a terminal's aspect ratio is about `cols ÷ (2 × rows)`. On a 16:9 screen, a 2 × 4 grid (2 rows of 4) has tiles of aspect about 0.89: 100×56 fills such a tile, while 120×36 leaves about 47% of it blank.
 - **No resizing in the MVP.** An existing session cannot be resized. A later version may add an explicit "Resize session…" action with a warning about inline TUIs.
 - **Programs cannot resize either.** xterm.js `windowOptions` stay disabled (the default), so XTWINOPS resize requests are ignored.
 
@@ -203,12 +204,18 @@ Nothing a viewer does sends a resize to the PTY:
 
 ### 4.5 Views
 
-- **Grid.** N×M tiles, one session per tile; drag a tile to swap positions.
-- **Focus.** One session in the largest area: same size, bigger font.
-- **Filmstrip,** for small screens.
+- **Tabs (workspaces).** The top bar holds tabs; each session belongs to exactly one.
+  - A tab has a name, a colour and a grid, all stored on the server, so every device and window sees the same tabs.
+  - Each tab has its own URL, `#t=<id>`. One browser tab can switch between workspace tabs, or several windows can each show one (on different monitors, say). The window title and icon show the tab's name and colour so windows are easy to tell apart.
+  - Double-click to rename. The context menu recolours, opens the tab in a new window, or deletes it.
+  - Drag a tile by its grip onto a tab to move the session; drag tabs to reorder them.
+  - Deleting a tab moves its sessions to the neighbouring tab; processes are never touched. The last tab cannot be deleted.
+  - A bell in any session marks its tab, so a workspace that needs attention is visible without switching to it.
+- **Grid.** Each tab's grid is written in matrix order, rows × columns: "2 × 3" is 2 rows of 3 tiles. Tiles appear in creation order; with more sessions than tiles, the grid scrolls.
+- **Focus.** One session in the largest area (`#s=<id>`): same size, bigger font.
+- **Filmstrip (later),** for small screens.
   - A main view plus a strip of thumbnail cards, on the left, right or bottom.
   - Click a card, or drag it into the main view, to switch sessions.
-- **Named layouts.** Layouts are named and stored on the server, for example `office-4x2` and `laptop-filmstrip`. Each device remembers which layout it uses.
 
 ### 4.6 Consistency rules
 
@@ -469,10 +476,12 @@ The UI is a shell. Adversaries:
 ### 9.2 Controls
 
 - **Listening.** Listen on 127.0.0.1 by default, or on a Unix socket (mode 0600). Binding to any other interface requires TLS or an explicit override flag.
-- **Authentication.** Token auth is always on, even on localhost, because other local users can reach 127.0.0.1.
-  - The first run generates a random token, stored in a 0600 file.
-  - `workstreams up` prints a one-time login link. The page exchanges it for an HttpOnly, `SameSite=Strict` cookie, marked `Secure` over HTTPS.
-  - After login, tokens never appear in URLs.
+- **Authentication** is always on, even on localhost, because other local users can reach 127.0.0.1.
+  - **Token.** The first run generates a random token, stored in a 0600 file. `workstreams up` prints a login link with it in the URL fragment; the page exchanges it for a cookie and removes it from the address bar and history. `workstreams token --rotate` replaces it.
+  - **Password (optional).** Set with `workstreams passwd` or in Settings, and stored as an argon2id hash. Once it is set, a bookmark of the plain URL is enough: the login page shows `user @ host`, so it is clear whose instance it is, and asks for the password.
+  - **Guessing is throttled.** Every local user connects from 127.0.0.1, so the limit is global: after five straight failures, each attempt waits out a lockout that doubles, up to 15 minutes. Token logins are exempt, since tokens cannot be guessed.
+  - **The cookie** is HttpOnly and `SameSite=Strict`, marked `Secure` over HTTPS. Its value is an HMAC of the token and the password hash, not a stored session, so logins survive server restarts, while rotating the token or changing the password signs out every browser. Changing the password also drops all open WebSockets.
+  - **The cookie name includes the instance id.** Browsers scope cookies by host, not port, so two instances tunnelled to localhost:7777 and localhost:7778 would otherwise overwrite each other's login.
 - **Origin and Host checks.** Check `Origin` and `Host` against an allowlist on every WebSocket upgrade and every state-changing request, inside the code path that handles upgrades. Real failures:
   - CVE-2026-53869: middleware did not run on upgrades, so DNS rebinding got past its checks;
   - code-server CVE-2023-26114: no Origin check;
@@ -484,7 +493,14 @@ The UI is a shell. Adversaries:
 - **Local files.** The daemon socket and the state directory are owner-only (0700 / 0600). Optionally verify the peer's uid with `SO_PEERCRED`.
 - **Hooks.** Each session has its own secret; the endpoint ignores requests without a matching one.
 
-### 9.3 Remote access, in order of preference
+### 9.3 Shared machines
+
+Each Unix user runs their own instance; nothing is shared between users.
+- **State is per user.** Sockets, tokens, passwords and sessions live under each user's home directory, owner-only.
+- **Ports.** The first `workstreams up` takes the first free port from 7777 and remembers it, so URLs and bookmarks stay stable. An explicit `--port` also sticks. If the remembered port is later taken, `up` stops and says so instead of silently moving.
+- **Telling instances apart.** `/api/health` reports the server's uid, and `up` accepts a server as its own only if the uid matches. Otherwise, on a shared machine, it could mistake another user's server on the same port for its own and print a link to it.
+
+### 9.4 Remote access, in order of preference
 
 1. **An SSH local forward**, either to the TCP port or straight to the server's Unix socket: `ssh -L 7777:/home/me/.local/state/workstreams/server.sock host`. The page is then served from localhost, which browsers treat as a secure context.
 2. **Tailscale Serve.** Valid certificates and tailnet-only access. Hostnames appear in public certificate-transparency logs.
@@ -529,6 +545,7 @@ workstreams kill <session>
 workstreams hook <agent>                agent hook entry point (JSON on stdin)
 workstreams hooks install <agent>
 workstreams install-service
+workstreams passwd [--clear]            set or remove the browser sign-in password
 workstreams token [--rotate]
 ```
 
@@ -557,18 +574,15 @@ workstreams token [--rotate]
 
 ## 13. Milestones
 
-- **M0, spike (1–2 days).**
-  - Daemon and server with a single session, attached from two browsers.
-  - Snapshot restore.
-  - Claude Code and Codex in both of their renderers.
-  - First version of the query responder and mode tracker.
+- **M0, spike: done.**
+  - Daemon and server; any number of browsers per session.
+  - Snapshot restore, the query responder and the mode tracker.
+  - Claude Code and Codex in both of their renderers: still to be checked by hand.
 - **M1, MVP.**
-  - Multiple sessions; grid and focus views; banners.
-  - Size invariant with zoom; per-OS keymaps.
-  - Auth and Origin/Host checks.
-  - Raw logs, `attach`, systemd units, single-binary builds.
+  - Done: multiple sessions; grid and focus views; banners; size invariant with zoom; per-OS keymaps; token and password auth; Origin/Host checks; single-binary builds.
+  - To do: raw logs, `attach`, systemd units.
 - **M2, agent awareness.** Status engine, hook installers, notifications, automatic subtitles, revival.
-- **M3, layouts.** Named layouts, filmstrip, drag and drop, PWA.
+- **M3, layouts.** Done: tabs with per-tab grids and URLs, moving sessions between tabs. To do: filmstrip, reordering tiles, PWA.
 - **M4, release.** Compatibility test suite, CI release pipeline for every target, docs.
 - **Later:**
   - History viewer and search.

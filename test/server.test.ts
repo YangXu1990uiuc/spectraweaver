@@ -3,6 +3,7 @@
 // Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { userInfo } from "node:os";
 import type { Paths } from "../src/common/paths.ts";
 import {
   type ClientMessage,
@@ -10,6 +11,7 @@ import {
   type ServerMessage,
   type SessionView,
   type Snapshot,
+  type TabView,
 } from "../src/common/protocol.ts";
 import { type DaemonHandle, startDaemon } from "../src/daemon/daemon.ts";
 import { type ServerHandle, startServer } from "../src/server/server.ts";
@@ -38,6 +40,18 @@ afterAll(async () => {
   await daemon.stop();
   cleanup();
 });
+
+function post(path: string, body: unknown, headers: Record<string, string> = {}): Promise<Response> {
+  return fetch(`${base}${path}`, {
+    method: "POST",
+    headers: { origin: base, "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+function cookieOf(response: Response): string {
+  return (response.headers.get("set-cookie") ?? "").split(";")[0]!;
+}
 
 /** A scripted browser tab that checks the output stream never has gaps. */
 class Tab {
@@ -174,3 +188,80 @@ test("sessions survive a server restart", async () => {
   await after.next((m) => m.t === "removed" && m.session === session.id);
   after.close();
 }, 30_000);
+
+test("health names the owner's uid so `up` can tell instances apart", async () => {
+  const health = (await (await fetch(`${base}/api/health`)).json()) as { ok: boolean; uid: number };
+  expect(health.ok).toBe(true);
+  expect(health.uid).toBe(process.getuid!());
+  const info = (await (await fetch(`${base}/api/login-info`)).json()) as { user: string; passwordSet: boolean };
+  expect(info.user).toBe(userInfo().username);
+  expect(info.passwordSet).toBe(false);
+});
+
+test("tabs: a session created in a tab lands there; moving; deleting a tab moves its sessions", async () => {
+  const tab = await Tab.open();
+  const { tabs } = await tab.next<{ t: "tabs"; tabs: TabView[] }>((m) => m.t === "tabs");
+  const main = tabs[0]!.id;
+  const agents = "cafe0001";
+  tab.send({ t: "tab-create", id: agents, name: "agents", color: "#2ea043", grid: "2x3" });
+  const created = await tab.next<{ t: "tabs"; tabs: TabView[] }>(
+    (m) => m.t === "tabs" && m.tabs.some((t) => t.id === agents),
+  );
+  expect(created.tabs.find((t) => t.id === agents)).toEqual({
+    id: agents,
+    name: "agents",
+    color: "#2ea043",
+    grid: "2x3",
+  });
+
+  tab.send({ t: "create", cols: 80, rows: 24, tab: agents });
+  const { session } = await tab.next<{ t: "session"; session: SessionView }>((m) => m.t === "session");
+  expect(session.tab).toBe(agents); // the very first broadcast already has the tab
+
+  tab.send({ t: "session-move", session: session.id, tab: main });
+  await tab.next((m) => m.t === "session" && m.session.id === session.id && m.session.tab === main);
+  tab.send({ t: "session-move", session: session.id, tab: agents });
+  await tab.next((m) => m.t === "session" && m.session.id === session.id && m.session.tab === agents);
+
+  tab.send({ t: "tab-delete", id: agents });
+  await tab.next((m) => m.t === "tabs" && !m.tabs.some((t) => t.id === agents));
+  await tab.next((m) => m.t === "session" && m.session.id === session.id && m.session.tab === main);
+
+  tab.send({ t: "tab-delete", id: main });
+  await tab.next((m) => m.t === "error"); // the last tab stays
+
+  tab.send({ t: "close", session: session.id });
+  await tab.next((m) => m.t === "removed" && m.session === session.id);
+  tab.close();
+}, 20_000);
+
+test("password: set it, sign in with it, sign out; other logins end", async () => {
+  expect((await post("/api/password", { password: "correct horse" })).status).toBe(401);
+  expect((await post("/api/password", { password: "short" }, { cookie })).status).toBe(400);
+  const set = await post("/api/password", { password: "correct horse" }, { cookie });
+  expect(set.status).toBe(204);
+  const fresh = cookieOf(set);
+  expect((await fetch(`${base}/api/me`, { headers: { cookie } })).status).toBe(401);
+  expect((await fetch(`${base}/api/me`, { headers: { cookie: fresh } })).status).toBe(200);
+
+  expect((await post("/api/login", { password: "wrong horse" })).status).toBe(401);
+  const login = await post("/api/login", { password: "correct horse" });
+  expect(login.status).toBe(204);
+  cookie = cookieOf(login);
+  expect(cookie).toBe(fresh);
+  const info = (await (await fetch(`${base}/api/login-info`)).json()) as { passwordSet: boolean };
+  expect(info.passwordSet).toBe(true);
+
+  const logout = await post("/api/logout", {}, { cookie });
+  expect(logout.headers.get("set-cookie")).toContain("Max-Age=0");
+});
+
+test("password guessing locks out after five failures; the token still works", async () => {
+  for (let i = 0; i < 5; i++) {
+    expect((await post("/api/login", { password: `guess-${i}-xxxxx` })).status).toBe(401);
+  }
+  const locked = await post("/api/login", { password: "correct horse" });
+  expect(locked.status).toBe(429);
+  expect(Number(locked.headers.get("retry-after"))).toBeGreaterThan(0);
+  expect((await post("/api/login", { token: server.token })).status).toBe(204);
+});

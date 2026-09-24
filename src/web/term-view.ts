@@ -16,7 +16,7 @@ const ZOOM_STEPS = [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3];
 const BASE_FONT_SIZE = 14;
 const MIN_FONT_SIZE = 3;
 const MAX_FONT_SIZE = 72;
-const FONT_FAMILY =
+export const FONT_FAMILY =
   '"JetBrains Mono", "Cascadia Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace';
 
 export interface TermViewOptions {

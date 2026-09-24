@@ -8,9 +8,11 @@
   --bg: #181818;
   --panel: #1f1f1f;
   --border: #2b2b2b;
+  --tile-border: #5a5a5a;
   --text: #cccccc;
   --muted: #8b8b8b;
   --accent: #0078d4;
+  --link: #4daafc;
   --warn: #cca700;
   --danger: #f14c4c;
   --ok: #2ea043;
@@ -56,14 +58,23 @@ button {
   cursor: pointer;
 }
 
-button:hover {
+button:hover:not(:disabled) {
   background: #333333;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #ffffff;
+}
+
+button.primary:hover {
+  background: #1a86d9;
 }
 
 code {
@@ -79,7 +90,29 @@ code {
   margin: 0;
 }
 
-/* ---- top bar ---- */
+.hint {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.link-btn {
+  padding: 0;
+  color: var(--link);
+  background: transparent;
+  border: none;
+}
+
+.link-btn:hover:not(:disabled) {
+  background: transparent;
+  text-decoration: underline;
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* ---- top bar and tabs ---- */
 
 .topbar {
   height: var(--topbar-h);
@@ -97,6 +130,7 @@ code {
 }
 
 .status {
+  flex: none;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -115,8 +149,98 @@ code {
   background: var(--danger);
 }
 
-.spacer {
+.tabs {
   flex: 1;
+  min-width: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.tab-list {
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tab {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  height: 31px;
+  padding: 0 6px 0 12px;
+  color: var(--muted);
+  background: #262626;
+  border-top: 3px solid var(--tab-color, var(--muted));
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  background: #2d2d2d;
+}
+
+.tab.active {
+  color: var(--text);
+  background: #333333;
+}
+
+.tab.drop-target {
+  outline: 1px dashed var(--link);
+  outline-offset: -2px;
+}
+
+.tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-count {
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--muted);
+  background: #1f1f1f;
+  border-radius: 8px;
+}
+
+.tab-alert {
+  color: var(--warn);
+}
+
+.tab-more {
+  visibility: hidden;
+  padding: 0 4px;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+}
+
+.tab:hover .tab-more,
+.tab.active .tab-more {
+  visibility: visible;
+}
+
+.tab-rename {
+  width: 140px;
+  padding: 1px 4px;
+}
+
+.tab-add {
+  flex: none;
+  margin-bottom: 3px;
+  padding: 1px 8px;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  font-size: 16px;
 }
 
 .warning {
@@ -125,12 +249,61 @@ code {
   cursor: help;
 }
 
+.settings-btn {
+  font-size: 15px;
+}
+
 .notice {
   flex: none;
   padding: 4px 10px;
   background: #3a2f00;
   color: #f0d060;
   border-bottom: 1px solid var(--border);
+}
+
+/* ---- menus ---- */
+
+.menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 190px;
+  padding: 4px;
+  background: #252526;
+  border: 1px solid #454545;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+
+.menu .item {
+  display: block;
+  width: 100%;
+  padding: 5px 10px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+}
+
+.menu .item:hover:not(:disabled) {
+  background: #094771;
+}
+
+.swatches {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+}
+
+.swatch {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+}
+
+.swatch.selected {
+  border-color: #ffffff;
 }
 
 /* ---- grid ---- */
@@ -172,7 +345,7 @@ code {
   min-width: 0;
   min-height: 0;
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: 1px solid var(--tile-border);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -191,8 +364,16 @@ code {
   align-items: center;
   gap: 6px;
   min-height: 28px;
-  padding: 2px 4px 2px 6px;
+  padding: 2px 4px 2px 4px;
   border-bottom: 1px solid var(--border);
+}
+
+.grip {
+  flex: none;
+  padding: 0 2px;
+  color: var(--muted);
+  cursor: grab;
+  user-select: none;
 }
 
 .banner {
@@ -260,7 +441,7 @@ code {
   border: none;
 }
 
-.icon-btn:hover {
+.icon-btn:hover:not(:disabled) {
   color: var(--text);
   background: #2f2f2f;
 }
@@ -281,7 +462,7 @@ code {
 /* ---- dialogs, toast, login ---- */
 
 dialog {
-  min-width: 380px;
+  min-width: 420px;
   padding: 16px 18px;
   color: var(--text);
   background: var(--panel);
@@ -298,6 +479,15 @@ dialog h2 {
   font-size: 15px;
 }
 
+dialog h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+
+dialog section {
+  margin-bottom: 14px;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -311,8 +501,19 @@ dialog h2 {
   color: var(--text);
 }
 
+.size-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.size-input {
+  width: 90px;
+}
+
 .actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 8px;
@@ -324,8 +525,8 @@ dialog h2 {
   bottom: 12px;
   max-width: 420px;
   padding: 8px 12px;
-  background: #3a1d1d;
-  border: 1px solid var(--danger);
+  background: #1d2c3a;
+  border: 1px solid var(--accent);
   border-radius: 4px;
 }
 
@@ -340,4 +541,14 @@ dialog h2 {
 .login h1 {
   margin: 0;
   font-size: 20px;
+}
+
+.login .who {
+  margin: -4px 0 4px;
+  color: var(--muted);
+}
+
+.login input[readonly] {
+  color: var(--muted);
+  background: #232323;
 }

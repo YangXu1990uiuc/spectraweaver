@@ -4,6 +4,8 @@
 
 import type { ServerWebSocket } from "bun";
 import { randomBytes } from "node:crypto";
+import { hostname, userInfo } from "node:os";
+import { loadConfig } from "../common/config.ts";
 import { ensurePrivateDir, type Paths } from "../common/paths.ts";
 import type {
   ClientMessage,
@@ -16,12 +18,14 @@ import type {
 import { VERSION } from "../common/version.ts";
 import indexPage from "../web/index.html";
 import {
-  COOKIE_NAME,
-  deriveCookieValue,
-  loadOrCreateToken,
+  cookieName,
+  Credentials,
+  LoginThrottle,
   readCookie,
   RequestGuard,
   safeEqual,
+  setPassword,
+  validatePassword,
 } from "./auth.ts";
 import { DaemonClient } from "./daemon-client.ts";
 import { MetaStore } from "./meta.ts";
@@ -59,18 +63,34 @@ interface Fan {
 // A browser that cannot keep up is disconnected; it reconnects and gets fresh snapshots.
 const MAX_CLIENT_BACKLOG = 32 * 1024 * 1024;
 
+function ownerName(): string {
+  try {
+    return userInfo().username;
+  } catch {
+    // Containers can run as a uid with no passwd entry.
+    return process.env.USER ?? `uid ${process.getuid?.() ?? "?"}`;
+  }
+}
+
 export async function startServer(options: ServerOptions): Promise<ServerHandle> {
   const log = options.log ?? ((message: string) => console.error(`[server] ${message}`));
   ensurePrivateDir(options.paths.stateDir);
-  const token = loadOrCreateToken(options.paths.tokenFile);
-  const cookieValue = deriveCookieValue(token);
+  const config = loadConfig(options.paths);
+  const credentials = new Credentials(options.paths.tokenFile, options.paths.passwordFile);
+  const cookie = cookieName(config.instanceId);
+  const throttle = new LoginThrottle();
   const guard = new RequestGuard(options.allowHosts);
   const meta = new MetaStore(options.paths.metaFile);
   const sessions = new Map<string, SessionInfo>();
   const clients = new Set<Client>();
   const fans = new Map<string, Fan>();
+  const owner = { user: ownerName(), host: hostname() };
 
-  const view = (session: SessionInfo): SessionView => ({ ...session, banner: meta.banner(session.id) });
+  const view = (session: SessionInfo): SessionView => ({
+    ...session,
+    banner: meta.banner(session.id),
+    tab: meta.tabOf(session.id),
+  });
 
   const send = (client: Client, data: string | Uint8Array) => {
     client.send(data);
@@ -85,6 +105,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     const session = sessions.get(id);
     if (session) broadcast({ t: "session", session: view(session) });
   };
+  const broadcastTabs = () => broadcast({ t: "tabs", tabs: meta.tabs() });
 
   const daemon = new DaemonClient(
     options.paths.daemonSocket,
@@ -123,6 +144,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     switch (event.type) {
       case "created":
         sessions.set(event.session.id, event.session);
+        // Sessions created from a browser carry the tab they were created in.
+        if (event.tag) meta.setSessionTab(event.session.id, event.tag);
         broadcast({ t: "session", session: view(event.session) });
         return;
       case "exited": {
@@ -225,7 +248,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
           focused: message.focused === true,
         });
         return;
-      case "create":
+      case "create": {
+        const tab = typeof message.tab === "string" && meta.hasTab(message.tab) ? message.tab : undefined;
         daemon.request(
           {
             op: "create",
@@ -233,12 +257,20 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
             rows: Number(message.rows),
             cwd: typeof message.cwd === "string" ? message.cwd : undefined,
             cmd: typeof message.cmd === "string" ? message.cmd : undefined,
+            tag: tab,
           },
           (response) => {
-            if (!response.ok) sendJson(client, { t: "error", message: response.error });
+            if (!response.ok) {
+              sendJson(client, { t: "error", message: response.error });
+              return;
+            }
+            // Daemons older than the tab tag don't echo it; place the session here instead.
+            const id = (response.result as SessionInfo).id;
+            if (tab && meta.tabOf(id) !== tab && meta.setSessionTab(id, tab)) broadcastSession(id);
           },
         );
         return;
+      }
       case "close":
         daemon.request({ op: "close", session: String(message.session) });
         return;
@@ -249,13 +281,68 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         broadcastSession(id);
         return;
       }
+      case "session-move": {
+        const id = String(message.session);
+        if (sessions.has(id) && meta.setSessionTab(id, String(message.tab))) broadcastSession(id);
+        return;
+      }
+      case "tab-create":
+        if (
+          meta.createTab({
+            id: String(message.id),
+            name: String(message.name ?? ""),
+            color: String(message.color ?? ""),
+            grid: String(message.grid ?? ""),
+          })
+        ) {
+          broadcastTabs();
+        }
+        return;
+      case "tab-update":
+        if (
+          meta.updateTab(String(message.id), {
+            name: typeof message.name === "string" ? message.name : undefined,
+            color: typeof message.color === "string" ? message.color : undefined,
+            grid: typeof message.grid === "string" ? message.grid : undefined,
+          })
+        ) {
+          broadcastTabs();
+        }
+        return;
+      case "tab-delete": {
+        const moved = meta.deleteTab(String(message.id), sessions.keys());
+        if (!moved) {
+          sendJson(client, { t: "error", message: "The last tab cannot be deleted." });
+          return;
+        }
+        broadcastTabs();
+        for (const id of moved) broadcastSession(id);
+        return;
+      }
+      case "tab-move":
+        if (meta.moveTab(String(message.id), Number(message.index))) broadcastTabs();
+        return;
     }
   }
 
   const isAuthed = (request: Request) => {
-    const cookie = readCookie(request, COOKIE_NAME);
-    return cookie !== null && safeEqual(cookie, cookieValue);
+    const value = readCookie(request, cookie);
+    return value !== null && safeEqual(value, credentials.cookieValue());
   };
+
+  const cookieHeader = (request: Request, value: string, maxAge: number) => {
+    const secure = request.headers.get("origin")?.startsWith("https:") ? "; Secure" : "";
+    return `${cookie}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${secure}`;
+  };
+
+  const loggedIn = (request: Request) =>
+    new Response(null, {
+      status: 204,
+      headers: { "Set-Cookie": cookieHeader(request, credentials.cookieValue(), 31_536_000) },
+    });
+
+  const readJson = async (request: Request) =>
+    ((await request.json().catch(() => null)) ?? {}) as Record<string, unknown>;
 
   const server = Bun.serve({
     hostname: options.host,
@@ -263,25 +350,56 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     development: options.development ?? false,
     routes: {
       "/": indexPage,
-      "/api/health": () => Response.json({ ok: true, version: VERSION }),
+      // `uid` lets `workstreams up` tell its own server from another user's on the same port.
+      "/api/health": () => Response.json({ ok: true, version: VERSION, uid: process.getuid?.() ?? null }),
+      "/api/login-info": () =>
+        Response.json({ ...owner, passwordSet: credentials.passwordHash() !== null }),
       "/api/me": (request) =>
         isAuthed(request) ? Response.json({ ok: true }) : new Response("unauthorized", { status: 401 }),
       "/api/login": {
         POST: async (request) => {
           if (!guard.check(request, true)) return new Response("forbidden", { status: 403 });
-          const body = (await request.json().catch(() => null)) as { token?: unknown } | null;
-          const candidate = typeof body?.token === "string" ? body.token : "";
-          if (!safeEqual(candidate, token)) {
-            await Bun.sleep(250);
-            return new Response("unauthorized", { status: 401 });
+          const body = await readJson(request);
+          if (typeof body.password === "string") {
+            const wait = throttle.retryAfterMs();
+            if (wait > 0) {
+              return new Response("too many attempts", {
+                status: 429,
+                headers: { "Retry-After": String(Math.ceil(wait / 1000)) },
+              });
+            }
+            if (!(await credentials.verifyPassword(body.password))) {
+              throttle.failed();
+              return new Response("unauthorized", { status: 401 });
+            }
+            throttle.succeeded();
+            return loggedIn(request);
           }
-          const secure = request.headers.get("origin")?.startsWith("https:") ? "; Secure" : "";
-          return new Response(null, {
-            status: 204,
-            headers: {
-              "Set-Cookie": `${COOKIE_NAME}=${cookieValue}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000${secure}`,
-            },
-          });
+          if (typeof body.token === "string" && safeEqual(body.token, credentials.token())) {
+            return loggedIn(request);
+          }
+          await Bun.sleep(250);
+          return new Response("unauthorized", { status: 401 });
+        },
+      },
+      "/api/password": {
+        POST: async (request) => {
+          if (!guard.check(request, true)) return new Response("forbidden", { status: 403 });
+          if (!isAuthed(request)) return new Response("unauthorized", { status: 401 });
+          const body = await readJson(request);
+          const password = typeof body.password === "string" ? body.password : "";
+          const problem = validatePassword(password);
+          if (problem) return new Response(problem, { status: 400 });
+          await setPassword(options.paths.passwordFile, password);
+          // Every other browser's cookie is now invalid; drop their sockets so they notice.
+          for (const client of clients) client.close(4001, "password changed");
+          return loggedIn(request);
+        },
+      },
+      "/api/logout": {
+        POST: (request) => {
+          if (!guard.check(request, true)) return new Response("forbidden", { status: 403 });
+          return new Response(null, { status: 204, headers: { "Set-Cookie": cookieHeader(request, "", 0) } });
         },
       },
       "/ws": (request, srv) => {
@@ -299,6 +417,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         clients.add(client);
         sendJson(client, { t: "hello", version: VERSION });
         sendJson(client, { t: "daemon", up: daemon.connected });
+        sendJson(client, { t: "tabs", tabs: meta.tabs() });
         sendJson(client, { t: "sessions", sessions: [...sessions.values()].map(view) });
       },
       message(client, raw) {
@@ -324,7 +443,9 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
 
   return {
     port,
-    token,
+    get token() {
+      return credentials.token();
+    },
     async stop() {
       daemon.stop();
       await server.stop(true);

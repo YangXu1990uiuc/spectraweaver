@@ -40,7 +40,8 @@ export interface Snapshot {
 export type DaemonRequest =
   | { op: "hello"; protocol: number; client: string }
   | { op: "list" }
-  | { op: "create"; cols: number; rows: number; cwd?: string; cmd?: string }
+  /** `tag` is opaque to the daemon and echoed in the "created" event (the server puts a tab id there). */
+  | { op: "create"; cols: number; rows: number; cwd?: string; cmd?: string; tag?: string }
   | { op: "input"; session: string; data: string; binary?: boolean }
   | { op: "subscribe"; session: string }
   | { op: "snapshot"; session: string }
@@ -52,7 +53,7 @@ export type DaemonRequest =
 export type DaemonRequestFrame = DaemonRequest & { t: "req"; id: number };
 
 export type DaemonEvent =
-  | { type: "created"; session: SessionInfo }
+  | { type: "created"; session: SessionInfo; tag?: string }
   | { type: "exited"; session: string; code: number | null; signal: string | null }
   | { type: "removed"; session: string }
   | { type: "title"; session: string; title: string }
@@ -76,20 +77,50 @@ export interface HelloResult {
 
 export interface SessionView extends SessionInfo {
   banner: string;
+  /** The tab (workspace) this session belongs to. */
+  tab: string;
 }
+
+export interface TabView {
+  id: string;
+  name: string;
+  color: string;
+  /** Tiles per screen in matrix order, "rowsxcols": "2x3" is 2 rows of 3 tiles. */
+  grid: string;
+}
+
+export const TAB_COLORS = [
+  "#8b8b8b",
+  "#f14c4c",
+  "#f5a623",
+  "#cca700",
+  "#2ea043",
+  "#26a69a",
+  "#3794ff",
+  "#b180d7",
+  "#e36fa8",
+] as const;
+
+export const GRID_PATTERN = /^[1-9]x[1-9]$/;
 
 export type ClientMessage =
   | { t: "sub"; session: string }
   | { t: "unsub"; session: string }
   | { t: "input"; session: string; data: string; binary?: boolean }
   | { t: "focus"; session: string; focused: boolean }
-  | { t: "create"; cols: number; rows: number; cwd?: string; cmd?: string }
+  | { t: "create"; cols: number; rows: number; cwd?: string; cmd?: string; tab?: string }
   | { t: "close"; session: string }
-  | { t: "banner"; session: string; banner: string };
+  | { t: "banner"; session: string; banner: string }
+  | { t: "session-move"; session: string; tab: string }
+  | { t: "tab-create"; id: string; name: string; color: string; grid: string }
+  | { t: "tab-update"; id: string; name?: string; color?: string; grid?: string }
+  | { t: "tab-delete"; id: string }
+  | { t: "tab-move"; id: string; index: number };
 
 export type ServerMessage =
   | { t: "hello"; version: string }
   | { t: "daemon"; up: boolean }
+  | { t: "tabs"; tabs: TabView[] }
   | { t: "sessions"; sessions: SessionView[] }
   | { t: "session"; session: SessionView }
   | { t: "removed"; session: string }

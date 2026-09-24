@@ -7,6 +7,8 @@ import { spawn } from "node:child_process";
 import { existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { loadConfig, saveConfig } from "./common/config.ts";
+import { pickFreePort, portIsFree } from "./common/net.ts";
 import { ensurePrivateDir, type Paths, resolvePaths } from "./common/paths.ts";
 import {
   type DaemonMessage,
@@ -20,18 +22,24 @@ import {
 } from "./common/protocol.ts";
 import { VERSION } from "./common/version.ts";
 
-const DEFAULT_PORT = 7777;
+const FIRST_PORT = 7777;
+const PORT_SEARCH = 100;
 const DEFAULT_HOST = "127.0.0.1";
+const BOOLEAN_FLAGS = new Set(["all", "clear", "rotate"]);
 
 const USAGE = `workstreams ${VERSION}: persistent terminals in the browser
 
 Usage:
   workstreams up [--port N] [--host ADDR] [--allow-host NAME]...
                         start the daemon and the server in the background
+                        (the first run picks a free port from ${FIRST_PORT} and remembers it)
   workstreams down [--all]
                         stop the server; --all also stops the daemon, ending every session
   workstreams status    show what is running
-  workstreams token     print the login token and link
+  workstreams passwd [--clear]
+                        set (or remove) the password for signing in from the browser
+  workstreams token [--rotate]
+                        print the login token and link; --rotate replaces it
   workstreams new [--size 120x36] [--cwd DIR] [-- COMMAND...]
                         create a session (COMMAND is typed into its shell)
   workstreams ls        list sessions
@@ -66,8 +74,7 @@ function parseFlags(args: string[], known: string[]): Flags {
       continue;
     }
     if (!known.includes(name)) fail(`unknown option --${name}\n\n${USAGE}`);
-    const isBoolean = name === "all";
-    const value = isBoolean ? "true" : (inline ?? args[++i]);
+    const value = BOOLEAN_FLAGS.has(name) ? "true" : (inline ?? args[++i]);
     if (value === undefined) fail(`--${name} needs a value`);
     values.set(name, [...(values.get(name) ?? []), value]);
   }
@@ -181,29 +188,63 @@ function serverUrl(host: string, port: number): string {
   return `http://${shown}:${port}`;
 }
 
-async function serverHealthy(url: string): Promise<boolean> {
+/** The server's health report, or null if nothing (or not workstreams) answers there. */
+async function probeServer(url: string): Promise<{ uid: number | null } | null> {
   try {
     const response = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(1000) });
-    return response.ok && ((await response.json()) as { ok?: boolean }).ok === true;
+    const health = (await response.json()) as { ok?: boolean; uid?: number | null };
+    return response.ok && health.ok === true ? { uid: health.uid ?? null } : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-async function loginLink(paths: Paths, url: string): Promise<string> {
-  const { loadOrCreateToken } = await import("./server/auth.ts");
-  return `${url}/#token=${loadOrCreateToken(paths.tokenFile)}`;
+async function isOwnServer(url: string): Promise<boolean> {
+  const probe = await probeServer(url);
+  return probe !== null && probe.uid === (process.getuid?.() ?? null);
+}
+
+async function readSecret(prompt: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    const text = await Bun.stdin.text();
+    return text.split(/\r?\n/)[0] ?? "";
+  }
+  process.stdout.write(prompt);
+  const stdin = process.stdin;
+  stdin.setRawMode(true);
+  stdin.resume();
+  return new Promise((resolve) => {
+    let value = "";
+    const finish = (result: string | null) => {
+      stdin.off("data", onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+      process.stdout.write("\n");
+      if (result === null) process.exit(130);
+      resolve(result);
+    };
+    const onData = (chunk: Buffer) => {
+      for (const char of chunk.toString("utf8")) {
+        if (char === "\r" || char === "\n") return finish(value);
+        if (char === "\x03") return finish(null);
+        if (char === "\x7f" || char === "\b") value = [...value].slice(0, -1).join("");
+        else if (char >= " ") value += char;
+      }
+    };
+    stdin.on("data", onData);
+  });
 }
 
 // ---- commands --------------------------------------------------------------------------
 
 async function cmdUp(args: string[]): Promise<void> {
   const flags = parseFlags(args, ["port", "host", "allow-host"]);
-  const port = Number(flag(flags, "port") ?? DEFAULT_PORT);
-  const host = flag(flags, "host") ?? DEFAULT_HOST;
-  const allowHosts = flags.values.get("allow-host") ?? [];
   const paths = resolvePaths();
   ensurePrivateDir(paths.stateDir);
+  const config = loadConfig(paths);
+  const requestedPort = flag(flags, "port");
+  const host = flag(flags, "host") ?? config.host ?? DEFAULT_HOST;
+  const allowHosts = flags.values.get("allow-host") ?? [];
 
   if (await daemonHello(paths)) {
     console.log("daemon  already running");
@@ -215,26 +256,56 @@ async function cmdUp(args: string[]): Promise<void> {
     console.log("daemon  started");
   }
 
+  let url: string;
   const running = readServerState(paths);
-  const url = serverUrl(running?.host ?? host, running?.port ?? port);
-  if (running && (await serverHealthy(url))) {
+  if (running) {
+    url = serverUrl(running.host, running.port);
+    if (requestedPort && Number(requestedPort) !== running.port) {
+      fail(`the server already runs on port ${running.port}; run \`workstreams down\` first to change it`);
+    }
+    if (!(await waitFor(() => isOwnServer(url), 5000))) {
+      fail(`the server (pid ${running.pid}) is not responding; see ${paths.serverLog}`);
+    }
     console.log(`server  already running at ${url}`);
   } else {
+    let port = requestedPort ? Number(requestedPort) : config.port;
+    if (port === undefined) {
+      port = pickFreePort(host, FIRST_PORT, PORT_SEARCH) ?? undefined;
+      if (port === undefined) {
+        fail(`no free port between ${FIRST_PORT} and ${FIRST_PORT + PORT_SEARCH - 1}; choose one with --port`);
+      }
+    } else if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      fail(`invalid port: ${requestedPort}`);
+    } else if (!portIsFree(host, port)) {
+      const other = await probeServer(serverUrl(host, port));
+      const holder = !other
+        ? "another program"
+        : other.uid === (process.getuid?.() ?? null)
+          ? "another workstreams instance of yours (a different state directory)"
+          : "another user's workstreams";
+      fail(`port ${port} is used by ${holder}; choose another with --port`);
+    }
+    url = serverUrl(host, port);
     const allow = allowHosts.flatMap((name) => ["--allow-host", name]);
     spawnDetached(selfArgv(["server", "--port", String(port), "--host", host, ...allow]), paths.serverLog);
-    if (!(await waitFor(() => serverHealthy(url), 10_000))) {
+    if (!(await waitFor(() => isOwnServer(url), 10_000))) {
       fail(`the server did not start; see ${paths.serverLog}`);
     }
+    saveConfig(paths, { ...config, port, host });
     console.log(`server  started at ${url}`);
   }
 
-  console.log(`\nOpen ${await loginLink(paths, url)}`);
-  const loopback = ["127.0.0.1", "localhost", "::1"].includes(running?.host ?? host);
-  if (loopback) {
-    const shownPort = running?.port ?? port;
-    console.log(
-      `From another computer: ssh -L ${shownPort}:localhost:${shownPort} <this server>, then open the link there.`,
-    );
+  const passwordSet = existsSync(paths.passwordFile);
+  if (passwordSet) {
+    console.log(`\nBookmark ${url}/ and sign in with your password.`);
+  } else {
+    const { loadOrCreateToken } = await import("./server/auth.ts");
+    console.log(`\nOpen ${url}/#token=${loadOrCreateToken(paths.tokenFile)}`);
+    console.log(`Tip: run \`workstreams passwd\` to sign in with a password instead, then bookmark ${url}/`);
+  }
+  const port = new URL(url).port;
+  if (["127.0.0.1", "localhost", "::1"].includes(running?.host ?? host)) {
+    console.log(`From another computer: ssh -L ${port}:localhost:${port} <this server>`);
   }
 }
 
@@ -272,15 +343,41 @@ async function cmdStatus(): Promise<void> {
   const server = readServerState(paths);
   if (server) console.log(`server  running  pid ${server.pid}  ${serverUrl(server.host, server.port)}`);
   else console.log("server  not running");
+  console.log(`login   ${existsSync(paths.passwordFile) ? "password or token" : "token (no password set)"}`);
 }
 
-async function cmdToken(): Promise<void> {
+async function cmdPasswd(args: string[]): Promise<void> {
+  const flags = parseFlags(args, ["clear"]);
   const paths = resolvePaths();
+  const { clearPassword, setPassword, validatePassword } = await import("./server/auth.ts");
+  if (flag(flags, "clear")) {
+    clearPassword(paths.passwordFile);
+    console.log("Password removed. Sign in with the token link from `workstreams token`.");
+    return;
+  }
+  const password = await readSecret("New password: ");
+  const problem = validatePassword(password);
+  if (problem) fail(`Password not set: ${problem}.`);
+  if (process.stdin.isTTY && (await readSecret("Repeat it: ")) !== password) {
+    fail("Password not set: the two entries differ.");
+  }
+  await setPassword(paths.passwordFile, password);
+  console.log("Password set. Browsers that were signed in need to sign in again.");
+}
+
+async function cmdToken(args: string[]): Promise<void> {
+  const flags = parseFlags(args, ["rotate"]);
+  const paths = resolvePaths();
+  const { loadOrCreateToken, rotateToken } = await import("./server/auth.ts");
+  const token = flag(flags, "rotate") ? rotateToken(paths.tokenFile) : loadOrCreateToken(paths.tokenFile);
   const server = readServerState(paths);
-  const url = server ? serverUrl(server.host, server.port) : serverUrl(DEFAULT_HOST, DEFAULT_PORT);
-  const link = await loginLink(paths, url);
-  console.log(link.slice(link.indexOf("#token=") + 7));
-  console.log(`\nLogin link: ${link}`);
+  const config = loadConfig(paths);
+  const url = server
+    ? serverUrl(server.host, server.port)
+    : serverUrl(config.host ?? DEFAULT_HOST, config.port ?? FIRST_PORT);
+  console.log(token);
+  console.log(`\nLogin link: ${url}/#token=${token}`);
+  if (flag(flags, "rotate")) console.log("The old token and every browser login are no longer valid.");
 }
 
 async function cmdNew(args: string[]): Promise<void> {
@@ -327,12 +424,13 @@ async function cmdDaemon(): Promise<void> {
 async function cmdServer(args: string[]): Promise<void> {
   const flags = parseFlags(args, ["port", "host", "allow-host"]);
   const paths = resolvePaths();
-  const host = flag(flags, "host") ?? DEFAULT_HOST;
+  const config = loadConfig(paths);
+  const host = flag(flags, "host") ?? config.host ?? DEFAULT_HOST;
   const { startServer } = await import("./server/server.ts");
   const handle = await startServer({
     paths,
     host,
-    port: Number(flag(flags, "port") ?? DEFAULT_PORT),
+    port: Number(flag(flags, "port") ?? config.port ?? FIRST_PORT),
     allowHosts: flags.values.get("allow-host") ?? [],
     development: process.env.WORKSTREAMS_DEV === "1",
   }).catch((error: Error) => fail(error.message));
@@ -360,8 +458,11 @@ try {
     case "status":
       await cmdStatus();
       break;
+    case "passwd":
+      await cmdPasswd(args);
+      break;
     case "token":
-      await cmdToken();
+      await cmdToken(args);
       break;
     case "new":
       await cmdNew(args);
