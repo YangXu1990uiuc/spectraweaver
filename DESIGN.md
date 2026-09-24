@@ -489,7 +489,7 @@ The UI is a shell. Adversaries:
 
 ### 9.2 Controls
 
-- **Listening.** Listen on 127.0.0.1 by default, or on a Unix socket (mode 0600). Binding to any other interface requires TLS or an explicit override flag.
+- **Listening.** Listen on 127.0.0.1 by default (a Unix socket, mode 0600, is planned). Binding any other address requires `--allow-remote` and prints a warning, because the server speaks plain HTTP; a specific bound address is added to the Host allowlist automatically, wildcards need `--allow-host`. The page also refuses to run inside another site's frame (clickjacking); `SameSite=Strict` already keeps framed copies signed out.
 - **Authentication** is always on, even on localhost, because other local users can reach 127.0.0.1.
   - **Token.** The first run generates a random token, stored in a 0600 file. `workstreams up` prints a login link with it in the URL fragment; the page exchanges it for a cookie and removes it from the address bar and history. `workstreams token --rotate` replaces it.
   - **Password (optional).** Set with `workstreams passwd` or in Settings, and stored as an argon2id hash. Once it is set, a bookmark of the plain URL is enough: the login page shows `user @ host`, so it is clear whose instance it is, and asks for the password.
@@ -549,7 +549,8 @@ Each Unix user runs their own instance; nothing is shared between users.
 ## 11. CLI
 
 ```
-workstreams up | down | status          start/stop daemon + server, show state
+workstreams up [--host ADDR --allow-remote] | down | status
+                                        start/stop daemon + server, show state
 workstreams daemon | server             service entry points
 workstreams new [--name N] [--size 120x36] [--cwd DIR] [-- CMD...]
 workstreams ls

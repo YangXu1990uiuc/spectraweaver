@@ -20,6 +20,14 @@ import { measureFont } from "./sizing.ts";
 import { SESSION_DRAG_TYPE, TabStrip } from "./tabs.ts";
 import { FONT_FAMILY, TermView } from "./term-view.ts";
 
+// Refuse to run inside another site's frame, so a page cannot overlay the terminal and trick
+// clicks or keystrokes into it (clickjacking). SameSite=Strict cookies already keep a framed
+// copy signed out.
+if (window.top !== window.self) {
+  document.body.textContent = "workstreams cannot be shown inside another page.";
+  throw new Error("workstreams refuses to run in a frame");
+}
+
 const platform = detectPlatform();
 // Matrix order, rows x columns: "2x3" is 2 rows of 3 tiles.
 const GRID_PRESETS = ["1x1", "1x2", "1x3", "2x2", "2x3", "2x4", "3x3", "3x4"];

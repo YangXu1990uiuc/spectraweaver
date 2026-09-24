@@ -19,3 +19,7 @@ export function pickFreePort(host: string, first: number, count: number): number
   }
   return null;
 }
+
+export function isLoopbackAddress(host: string): boolean {
+  return host === "localhost" || host === "::1" || host === "[::1]" || /^127\./.test(host);
+}

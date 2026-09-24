@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { loadInstance, loadSettings, migrateFlatState, saveInstance, saveSettings } from "./common/config.ts";
 import { networkFilesystem, writeFileAtomic } from "./common/files.ts";
-import { pickFreePort, portIsFree } from "./common/net.ts";
+import { isLoopbackAddress, pickFreePort, portIsFree } from "./common/net.ts";
 import { ensurePrivateDir, expandHome, hostKey, MAX_SOCKET_PATH, type Paths, resolvePaths } from "./common/paths.ts";
 import {
   type DaemonMessage,
@@ -26,15 +26,16 @@ import { VERSION } from "./common/version.ts";
 const FIRST_PORT = 7777;
 const PORT_SEARCH = 100;
 const DEFAULT_HOST = "127.0.0.1";
-const BOOLEAN_FLAGS = new Set(["all", "clear", "rotate", "reset"]);
+const BOOLEAN_FLAGS = new Set(["all", "clear", "rotate", "reset", "allow-remote"]);
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
 const USAGE = `workstreams ${VERSION}: persistent terminals in the browser
 
 Usage:
-  workstreams up [--port N] [--host ADDR] [--allow-host NAME]...
+  workstreams up [--port N] [--host ADDR --allow-remote] [--allow-host NAME]...
                         start the daemon and the server in the background
-                        (the first run picks a free port from ${FIRST_PORT} and remembers it)
+                        (the first run picks a free port from ${FIRST_PORT} and remembers it;
+                        listening beyond localhost needs --allow-remote: see SECURITY.md)
   workstreams down [--all]
                         stop the server; --all also stops the daemon, ending every session
   workstreams status    show what is running
@@ -50,7 +51,7 @@ Usage:
                         keep state (socket, logs, tabs) under PATH, e.g. on a local disk
                         when the home directory is small or on NFS
   workstreams daemon    run the daemon in the foreground
-  workstreams server [--port N] [--host ADDR] [--allow-host NAME]...
+  workstreams server [--port N] [--host ADDR --allow-remote] [--allow-host NAME]...
                         run the server in the foreground
 `;
 
@@ -94,6 +95,27 @@ function flag(flags: Flags, name: string): string | undefined {
 function fail(message: string): never {
   console.error(message);
   process.exit(1);
+}
+
+/**
+ * workstreams is a shell in a web page, so listening beyond localhost needs an explicit
+ * --allow-remote. A remembered non-loopback host counts as an earlier opt-in.
+ */
+function checkRemoteExposure(host: string, optedIn: boolean): void {
+  if (isLoopbackAddress(host)) return;
+  if (!optedIn) {
+    fail(
+      `Refusing to listen on ${host}. workstreams gives a shell to whoever signs in, and this would make it\n` +
+        "reachable from the network over plain HTTP (passwords and terminal contents unencrypted).\n" +
+        "Keep the default (127.0.0.1) and reach it through an SSH tunnel or a VPN. If you really mean it,\n" +
+        "for example behind an HTTPS reverse proxy on a trusted network, add --allow-remote.\n" +
+        "Never expose workstreams to the internet. See SECURITY.md.",
+    );
+  }
+  console.error(
+    `WARNING: listening on ${host} over plain HTTP. Anyone who can reach it can try to sign in, and traffic\n` +
+      "is unencrypted. Never expose it to the internet; prefer an SSH tunnel, a VPN or an HTTPS reverse proxy.",
+  );
 }
 
 // ---- talking to the daemon -------------------------------------------------------------
@@ -248,7 +270,7 @@ async function readSecret(prompt: string): Promise<string> {
 // ---- commands --------------------------------------------------------------------------
 
 async function cmdUp(args: string[]): Promise<void> {
-  const flags = parseFlags(args, ["port", "host", "allow-host"]);
+  const flags = parseFlags(args, ["port", "host", "allow-host", "allow-remote"]);
   const paths = resolvePaths();
   ensurePrivateDir(paths.stateDir);
   for (const name of migrateFlatState(paths)) console.log(`moved   ${name} into ${paths.stateDir}`);
@@ -256,6 +278,7 @@ async function cmdUp(args: string[]): Promise<void> {
   const requestedPort = flag(flags, "port");
   const host = flag(flags, "host") ?? instance.host ?? DEFAULT_HOST;
   const allowHosts = flags.values.get("allow-host") ?? [];
+  checkRemoteExposure(host, flag(flags, "allow-remote") !== undefined || instance.host === host);
 
   if (await daemonHello(paths)) {
     console.log("daemon  already running");
@@ -298,7 +321,11 @@ async function cmdUp(args: string[]): Promise<void> {
     }
     url = serverUrl(host, port);
     const allow = allowHosts.flatMap((name) => ["--allow-host", name]);
-    spawnDetached(selfArgv(["server", "--port", String(port), "--host", host, ...allow]), paths.serverLog);
+    const remote = isLoopbackAddress(host) ? [] : ["--allow-remote"];
+    spawnDetached(
+      selfArgv(["server", "--port", String(port), "--host", host, ...remote, ...allow]),
+      paths.serverLog,
+    );
     if (!(await waitFor(() => isOwnServer(url), 10_000))) {
       fail(`the server did not start; see ${paths.serverLog}`);
     }
@@ -496,11 +523,12 @@ async function cmdDaemon(): Promise<void> {
 }
 
 async function cmdServer(args: string[]): Promise<void> {
-  const flags = parseFlags(args, ["port", "host", "allow-host"]);
+  const flags = parseFlags(args, ["port", "host", "allow-host", "allow-remote"]);
   const paths = resolvePaths();
   migrateFlatState(paths);
   const instance = loadInstance(paths);
   const host = flag(flags, "host") ?? instance.host ?? DEFAULT_HOST;
+  checkRemoteExposure(host, flag(flags, "allow-remote") !== undefined || instance.host === host);
   const { startServer } = await import("./server/server.ts");
   const handle = await startServer({
     paths,

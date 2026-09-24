@@ -4,6 +4,9 @@ Persistent terminals in the browser, for running many CLI coding agents on a dev
 
 > Status: early prototype. Expect rough edges. The plan is in [DESIGN.md](DESIGN.md).
 
+> [!WARNING]
+> workstreams puts a shell in a web page: anyone who can sign in gets a shell on your server. It listens on 127.0.0.1 only. Reach it through an SSH tunnel or a VPN, and **never expose it to the internet**. See [SECURITY.md](SECURITY.md).
+
 - **Sessions outlive everything but the machine.** Close the tab, lose the network, restart the web server: programs keep running on the server.
 - **Same state everywhere.** Every browser, window and device sees the same terminals, tabs and banners.
 - **Any CLI.** Claude Code, Codex, Gemini CLI, shells, editors: these are real terminals, rendered with xterm.js, the same engine as VS Code's terminal.
@@ -66,7 +69,7 @@ workstreams uses no file locks and no SQLite, the usual sources of NFS trouble. 
 
 | Command | What it does |
 |---|---|
-| `workstreams up [--port N] [--host ADDR] [--allow-host NAME]` | Start the daemon and the server in the background. |
+| `workstreams up [--port N] [--allow-host NAME]` | Start the daemon and the server in the background. (`--host ADDR --allow-remote` listens beyond localhost; read [SECURITY.md](SECURITY.md) first.) |
 | `workstreams down [--all]` | Stop the server. `--all` also stops the daemon, which ends every session. |
 | `workstreams status` | Show what is running. |
 | `workstreams passwd [--clear]` | Set (or remove) the password for signing in from the browser. |
@@ -96,4 +99,4 @@ WORKSTREAMS_DEV=1 bun run dev server --port 7788   # server in the foreground
 
 ## License
 
-[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution requirements.
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution requirements. Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).

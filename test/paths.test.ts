@@ -22,7 +22,7 @@ function scratch(): string {
 }
 
 test("host directory names are short, readable and distinct", () => {
-  expect(hostKey("gx10-aad2")).toBe("gx10-aad2");
+  expect(hostKey("devbox-01")).toBe("devbox-01");
   expect(hostKey("node7.cluster.example.com")).toBe("node7");
   const a = hostKey("sjc22-be105-2e9197a8-ea3f-473f-af17-8605654ee2f4-0A34AA951EB6.local");
   const b = hostKey("sjc22-be105-2e9197a8-ea3f-473f-af17-8605654ee2f4-1B45BB062FC7.local");

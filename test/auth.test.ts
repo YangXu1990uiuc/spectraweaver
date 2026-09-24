@@ -3,7 +3,7 @@
 // Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
 
 import { expect, test } from "bun:test";
-import { hostnameOf, RequestGuard } from "../src/server/auth.ts";
+import { boundHostAllowlist, hostnameOf, RequestGuard } from "../src/server/auth.ts";
 
 function request(headers: Record<string, string>): Request {
   return new Request("http://127.0.0.1:7777/ws", { headers });
@@ -33,4 +33,14 @@ test("unknown Host headers are rejected (DNS rebinding) unless allowed", () => {
   const rebinding = request({ host: "evil.example:7777", origin: "http://evil.example:7777" });
   expect(new RequestGuard().check(rebinding, true)).toBe(false);
   expect(new RequestGuard(["evil.example"]).check(rebinding, true)).toBe(true);
+});
+
+test("a specific bound address is allowed as Host; loopback and wildcards add nothing", () => {
+  expect(boundHostAllowlist("127.0.0.1")).toEqual([]);
+  expect(boundHostAllowlist("0.0.0.0")).toEqual([]);
+  expect(boundHostAllowlist("::")).toEqual([]);
+  expect(boundHostAllowlist("10.1.2.3")).toEqual(["10.1.2.3"]);
+  expect(boundHostAllowlist("fd00::1")).toEqual(["[fd00::1]"]);
+  const guard = new RequestGuard(boundHostAllowlist("10.1.2.3"));
+  expect(guard.check(request({ host: "10.1.2.3:7777", origin: "http://10.1.2.3:7777" }), true)).toBe(true);
 });

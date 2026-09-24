@@ -6,6 +6,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { writeFileAtomic } from "../common/files.ts";
+import { isLoopbackAddress } from "../common/net.ts";
 import { ensurePrivateDir } from "../common/paths.ts";
 
 export const MIN_PASSWORD_LENGTH = 8;
@@ -146,6 +147,15 @@ export function readCookie(request: Request, name: string): string | null {
 }
 
 const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
+
+/**
+ * When the server binds a specific non-loopback address, browsers send that address as the
+ * Host header, so it must be allowed. Wildcards (0.0.0.0, ::) need explicit --allow-host.
+ */
+export function boundHostAllowlist(host: string): string[] {
+  if (isLoopbackAddress(host) || host === "0.0.0.0" || host === "::" || host === "") return [];
+  return [host.includes(":") && !host.startsWith("[") ? `[${host}]` : host];
+}
 
 export function hostnameOf(hostHeader: string): string {
   const host = hostHeader.trim().toLowerCase();

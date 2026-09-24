@@ -18,6 +18,7 @@ import type {
 import { VERSION } from "../common/version.ts";
 import indexPage from "../web/index.html";
 import {
+  boundHostAllowlist,
   cookieName,
   Credentials,
   LoginThrottle,
@@ -79,7 +80,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
   const credentials = new Credentials(options.paths.tokenFile, options.paths.passwordFile);
   const cookie = cookieName(instance.instanceId);
   const throttle = new LoginThrottle();
-  const guard = new RequestGuard(options.allowHosts);
+  const guard = new RequestGuard([...(options.allowHosts ?? []), ...boundHostAllowlist(options.host)]);
   const meta = new MetaStore(options.paths.metaFile);
   const sessions = new Map<string, SessionInfo>();
   const clients = new Set<Client>();
