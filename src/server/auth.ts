@@ -16,10 +16,13 @@ export function cookieName(instanceId: string): string {
   return `workstreams_${instanceId}`;
 }
 
+/** Tokens are 32 characters; a shorter one is replaced at startup and refused afterwards. */
+const MIN_TOKEN_LENGTH = 32;
+
 export function loadOrCreateToken(file: string): string {
   if (existsSync(file)) {
     const token = readFileSync(file, "utf8").trim();
-    if (token.length >= 32) return token;
+    if (token.length >= MIN_TOKEN_LENGTH) return token;
   }
   return rotateToken(file);
 }
@@ -69,9 +72,10 @@ class WatchedFile {
 }
 
 /**
- * The token (always present) and the optional password hash. The login cookie is derived
- * from both instead of being stored, so logins survive server restarts, while rotating the
- * token or changing the password logs every browser out.
+ * The token and the optional password hash. The login cookie is derived from both instead
+ * of being stored, so logins survive server restarts, while rotating the token or changing
+ * the password logs every browser out. If the token file disappears while the server runs
+ * (deleted, or its directory moved), nothing signs in until it is back.
  */
 export class Credentials {
   private readonly tokenFile: WatchedFile;
@@ -83,16 +87,20 @@ export class Credentials {
     this.passwordFile = new WatchedFile(passwordPath);
   }
 
-  token(): string {
-    return this.tokenFile.read() ?? "";
+  /** Null when the token file is missing or truncated: never an empty key that anyone can match. */
+  token(): string | null {
+    const token = this.tokenFile.read();
+    return token !== null && token.length >= MIN_TOKEN_LENGTH ? token : null;
   }
 
   passwordHash(): string | null {
     return this.passwordFile.read();
   }
 
-  cookieValue(): string {
-    return createHmac("sha256", this.token())
+  cookieValue(): string | null {
+    const token = this.token();
+    if (token === null) return null;
+    return createHmac("sha256", token)
       .update(`workstreams-cookie-v2\0${this.passwordHash() ?? ""}`)
       .digest("base64url");
   }

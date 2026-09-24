@@ -114,6 +114,8 @@ function showLoginForm(app: HTMLElement, info: LoginInfo): Promise<void> {
         } else if (response.status === 429) {
           const wait = response.headers.get("retry-after") ?? "a few";
           error.textContent = `Too many attempts. Try again in ${wait} seconds.`;
+        } else if (response.status === 503) {
+          void response.text().then((reason) => (error.textContent = `Sign-in is unavailable: ${reason}.`));
         } else {
           error.textContent = useToken ? "That token is not valid." : "Wrong password.";
         }

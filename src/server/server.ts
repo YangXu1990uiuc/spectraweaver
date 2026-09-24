@@ -43,7 +43,8 @@ export interface ServerOptions {
 
 export interface ServerHandle {
   readonly port: number;
-  readonly token: string;
+  /** Null only if the token file has gone missing since startup. */
+  readonly token: string | null;
   stop(): Promise<void>;
 }
 
@@ -328,7 +329,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
 
   const isAuthed = (request: Request) => {
     const value = readCookie(request, cookie);
-    return value !== null && safeEqual(value, credentials.cookieValue());
+    const expected = credentials.cookieValue();
+    return value !== null && expected !== null && safeEqual(value, expected);
   };
 
   const cookieHeader = (request: Request, value: string, maxAge: number) => {
@@ -336,11 +338,14 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     return `${cookie}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${secure}`;
   };
 
-  const loggedIn = (request: Request) =>
-    new Response(null, {
-      status: 204,
-      headers: { "Set-Cookie": cookieHeader(request, credentials.cookieValue(), 31_536_000) },
-    });
+  const loggedIn = (request: Request) => {
+    const value = credentials.cookieValue();
+    if (value === null) {
+      log(`sign-in refused: the token file ${options.paths.tokenFile} is missing`);
+      return new Response("the server's token file is missing; restart it", { status: 503 });
+    }
+    return new Response(null, { status: 204, headers: { "Set-Cookie": cookieHeader(request, value, 31_536_000) } });
+  };
 
   const readJson = async (request: Request) =>
     ((await request.json().catch(() => null)) ?? {}) as Record<string, unknown>;
@@ -376,7 +381,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
             throttle.succeeded();
             return loggedIn(request);
           }
-          if (typeof body.token === "string" && safeEqual(body.token, credentials.token())) {
+          const token = credentials.token();
+          if (token !== null && typeof body.token === "string" && safeEqual(body.token, token)) {
             return loggedIn(request);
           }
           await Bun.sleep(250);

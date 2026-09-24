@@ -3,6 +3,8 @@
 // Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { createHmac } from "node:crypto";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import type { Paths } from "../src/common/paths.ts";
 import {
@@ -117,9 +119,9 @@ test("login requires the token and sets an HttpOnly cookie", async () => {
       body: JSON.stringify({ token }),
     });
   expect((await post("wrong")).status).toBe(401);
-  expect((await post(server.token, "https://evil.example")).status).toBe(403);
+  expect((await post(server.token!, "https://evil.example")).status).toBe(403);
 
-  const ok = await post(server.token);
+  const ok = await post(server.token!);
   expect(ok.status).toBe(204);
   const setCookie = ok.headers.get("set-cookie") ?? "";
   expect(setCookie).toContain("HttpOnly");
@@ -264,4 +266,20 @@ test("password guessing locks out after five failures; the token still works", a
   expect(locked.status).toBe(429);
   expect(Number(locked.headers.get("retry-after"))).toBeGreaterThan(0);
   expect((await post("/api/login", { token: server.token })).status).toBe(204);
+});
+
+test("if the token file goes missing, nothing signs in (no empty-token fallback)", async () => {
+  const token = readFileSync(paths.tokenFile, "utf8");
+  const hash = existsSync(paths.passwordFile) ? readFileSync(paths.passwordFile, "utf8").trim() : "";
+  const emptyKeyCookie = createHmac("sha256", "").update(`workstreams-cookie-v2\0${hash}`).digest("base64url");
+  const name = cookie.split("=")[0]!;
+  rmSync(paths.tokenFile);
+  try {
+    expect((await post("/api/login", { token: "" })).status).toBe(401);
+    expect((await fetch(`${base}/api/me`, { headers: { cookie: `${name}=${emptyKeyCookie}` } })).status).toBe(401);
+    expect((await fetch(`${base}/api/me`, { headers: { cookie } })).status).toBe(401);
+  } finally {
+    writeFileSync(paths.tokenFile, token, { mode: 0o600 });
+  }
+  expect((await fetch(`${base}/api/me`, { headers: { cookie } })).status).toBe(200);
 });

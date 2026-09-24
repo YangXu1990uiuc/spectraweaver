@@ -3,7 +3,10 @@
 // Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
 
 import { expect, test } from "bun:test";
-import { boundHostAllowlist, hostnameOf, RequestGuard } from "../src/server/auth.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { boundHostAllowlist, Credentials, hostnameOf, RequestGuard } from "../src/server/auth.ts";
 
 function request(headers: Record<string, string>): Request {
   return new Request("http://127.0.0.1:7777/ws", { headers });
@@ -43,4 +46,21 @@ test("a specific bound address is allowed as Host; loopback and wildcards add no
   expect(boundHostAllowlist("fd00::1")).toEqual(["[fd00::1]"]);
   const guard = new RequestGuard(boundHostAllowlist("10.1.2.3"));
   expect(guard.check(request({ host: "10.1.2.3:7777", origin: "http://10.1.2.3:7777" }), true)).toBe(true);
+});
+
+test("credentials fail closed when the token file disappears or is truncated", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ws-auth-"));
+  try {
+    const tokenFile = join(dir, "auth.token");
+    const credentials = new Credentials(tokenFile, join(dir, "password"));
+    expect(credentials.token()).toHaveLength(32);
+    expect(credentials.cookieValue()).not.toBeNull();
+    rmSync(tokenFile);
+    expect(credentials.token()).toBeNull();
+    expect(credentials.cookieValue()).toBeNull();
+    writeFileSync(tokenFile, "short\n");
+    expect(credentials.token()).toBeNull();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
