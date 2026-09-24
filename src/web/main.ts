@@ -405,10 +405,15 @@ function onServerMessage(message: ServerMessage): void {
       for (const id of belled) if (!sessions.has(id)) belled.delete(id);
       render();
       return;
-    case "session":
+    case "session": {
+      const previous = sessions.get(message.session.id);
       sessions.set(message.session.id, message.session);
-      render();
+      // Agents retitle their terminals many times a second: unless the session changed
+      // tabs, only its own tile needs updating.
+      if (previous?.tab === message.session.tab) tiles.get(message.session.id)?.update(message.session);
+      else render();
       return;
+    }
     case "removed":
       sessions.delete(message.session);
       belled.delete(message.session);

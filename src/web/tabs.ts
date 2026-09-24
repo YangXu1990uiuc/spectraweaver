@@ -20,6 +20,14 @@ export interface TabStripHandlers {
   moveSession(sessionId: string, tabId: string): void;
 }
 
+interface TabItem {
+  root: HTMLDivElement;
+  name: HTMLSpanElement;
+  count: HTMLSpanElement;
+  alert: HTMLSpanElement;
+  more: HTMLButtonElement;
+}
+
 export interface TabStripState {
   tabs: TabView[];
   activeId: string | null;
@@ -32,6 +40,7 @@ export class TabStrip {
   readonly element: HTMLDivElement;
   private readonly list: HTMLDivElement;
   private state: TabStripState = { tabs: [], activeId: null, counts: new Map(), alerts: new Set() };
+  private readonly items = new Map<string, TabItem>();
   private menu: HTMLDivElement | null = null;
   private editing: string | null = null;
   private renameWhenShown: string | null = null;
@@ -68,80 +77,103 @@ export class TabStrip {
     this.renameWhenShown = id;
   }
 
+  /**
+   * Updates the tabs in place. Agents change their terminal titles many times a second, and
+   * each change re-renders; replacing the elements would swallow clicks and drops on them,
+   * because the element under the pointer would be gone before the button is released.
+   */
   render(state: TabStripState): void {
+    const activeChanged = state.activeId !== this.state.activeId;
     this.state = state;
     if (this.editing) return; // don't yank the input away mid-rename
-    this.list.replaceChildren(...state.tabs.map((tab, index) => this.renderTab(tab, index)));
-    this.list.querySelector(".tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
-    if (this.renameWhenShown && state.tabs.some((tab) => tab.id === this.renameWhenShown)) {
+    const ids = new Set(state.tabs.map((tab) => tab.id));
+    for (const [id, item] of this.items) {
+      if (!ids.has(id)) {
+        item.root.remove();
+        this.items.delete(id);
+      }
+    }
+    state.tabs.forEach((tab, index) => {
+      let item = this.items.get(tab.id);
+      if (!item) {
+        item = this.createItem(tab.id);
+        this.items.set(tab.id, item);
+      }
+      this.updateItem(item, tab);
+      // Move only elements that are out of place: moving one also swallows a click on it.
+      if (this.list.children[index] !== item.root) this.list.insertBefore(item.root, this.list.children[index] ?? null);
+    });
+    if (activeChanged) this.list.querySelector(".tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (this.renameWhenShown && ids.has(this.renameWhenShown)) {
       const id = this.renameWhenShown;
       this.renameWhenShown = null;
       this.startRename(id);
     }
   }
 
-  private renderTab(tab: TabView, index: number): HTMLElement {
+  private updateItem(item: TabItem, tab: TabView): void {
     const active = tab.id === this.state.activeId;
-    const count = this.state.counts.get(tab.id) ?? 0;
-    const item = el(
-      "div",
-      {
-        class: active ? "tab active" : "tab",
-        role: "tab",
-        "aria-selected": String(active),
-        draggable: "true",
-        title: `${tab.name} (${count} terminal${count === 1 ? "" : "s"})`,
-        "data-id": tab.id,
-      },
-      [
-        el("span", { class: "tab-name" }, [tab.name]),
-        el("span", { class: "tab-count" }, [String(count)]),
-      ],
-    );
-    item.style.setProperty("--tab-color", tab.color);
-    if (this.state.alerts.has(tab.id)) {
-      item.append(el("span", { class: "tab-alert", title: "A terminal here wants attention" }, ["●"]));
-    }
-    const more = el("button", { class: "tab-more", title: "Tab options" }, ["⋯"]);
-    item.append(more);
+    const count = String(this.state.counts.get(tab.id) ?? 0);
+    const title = `${tab.name} (${count} terminal${count === "1" ? "" : "s"})`;
+    item.root.classList.toggle("active", active);
+    item.root.setAttribute("aria-selected", String(active));
+    if (item.root.title !== title) item.root.title = title;
+    item.root.style.setProperty("--tab-color", tab.color);
+    if (item.name.textContent !== tab.name) item.name.textContent = tab.name;
+    if (item.count.textContent !== count) item.count.textContent = count;
+    item.alert.hidden = !this.state.alerts.has(tab.id);
+  }
 
-    item.addEventListener("click", (event) => {
-      if (event.target !== more) this.handlers.select(tab.id);
+  /** Builds a tab's elements once; its handlers look the tab up when they run. */
+  private createItem(id: string): TabItem {
+    const name = el("span", { class: "tab-name" });
+    const count = el("span", { class: "tab-count" });
+    const alert = el("span", { class: "tab-alert", title: "A terminal here wants attention", hidden: "" }, ["●"]);
+    const more = el("button", { class: "tab-more", title: "Tab options" }, ["⋯"]);
+    const root = el("div", { class: "tab", role: "tab", draggable: "true", "data-id": id }, [name, count, alert, more]);
+    const current = () => this.state.tabs.find((tab) => tab.id === id);
+
+    root.addEventListener("click", (event) => {
+      if (event.target !== more) this.handlers.select(id);
     });
-    item.addEventListener("dblclick", () => this.startRename(tab.id));
-    item.addEventListener("contextmenu", (event) => {
+    root.addEventListener("dblclick", () => this.startRename(id));
+    root.addEventListener("contextmenu", (event) => {
       event.preventDefault();
-      this.openMenu(tab, event.clientX, event.clientY);
+      const tab = current();
+      if (tab) this.openMenu(tab, event.clientX, event.clientY);
     });
     more.addEventListener("click", (event) => {
       event.stopPropagation();
+      const tab = current();
       const rect = more.getBoundingClientRect();
-      this.openMenu(tab, rect.left, rect.bottom + 2);
+      if (tab) this.openMenu(tab, rect.left, rect.bottom + 2);
     });
 
-    item.addEventListener("dragstart", (event) => {
-      event.dataTransfer?.setData(TAB_DRAG_TYPE, tab.id);
+    root.addEventListener("dragstart", (event) => {
+      event.dataTransfer?.setData(TAB_DRAG_TYPE, id);
       if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
     });
-    item.addEventListener("dragover", (event) => {
+    root.addEventListener("dragover", (event) => {
       const types = event.dataTransfer?.types ?? [];
       if (!types.includes(TAB_DRAG_TYPE) && !types.includes(SESSION_DRAG_TYPE)) return;
       event.preventDefault();
-      item.classList.add("drop-target");
+      root.classList.add("drop-target");
     });
-    item.addEventListener("dragleave", () => item.classList.remove("drop-target"));
-    item.addEventListener("drop", (event) => {
+    root.addEventListener("dragleave", () => root.classList.remove("drop-target"));
+    root.addEventListener("drop", (event) => {
       event.preventDefault();
-      item.classList.remove("drop-target");
+      root.classList.remove("drop-target");
       const sessionId = event.dataTransfer?.getData(SESSION_DRAG_TYPE);
       if (sessionId) {
-        this.handlers.moveSession(sessionId, tab.id);
+        this.handlers.moveSession(sessionId, id);
         return;
       }
       const draggedTab = event.dataTransfer?.getData(TAB_DRAG_TYPE);
-      if (draggedTab && draggedTab !== tab.id) this.handlers.move(draggedTab, index);
+      if (draggedTab && draggedTab !== id) {
+        this.handlers.move(draggedTab, this.state.tabs.findIndex((tab) => tab.id === id));
+      }
     });
-    return item;
+    return { root, name, count, alert, more };
   }
 
   private startRename(id: string): void {
@@ -162,6 +194,9 @@ export class TabStrip {
       this.editing = null;
       const name = input.value.trim();
       if (commit && name && name !== tab.name) this.handlers.rename(id, name);
+      // The input replaced the tab's contents: build the tab afresh.
+      this.items.get(id)?.root.remove();
+      this.items.delete(id);
       this.render(this.state);
     };
     input.addEventListener("keydown", (event) => {
