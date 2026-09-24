@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { el } from "./dom.ts";
 
@@ -35,7 +35,7 @@ async function loginInfo(): Promise<LoginInfo> {
 }
 
 /**
- * Signs in: first with a `#token=` from the address bar (the link `workstreams up` prints),
+ * Signs in: first with a `#token=` from the address bar (the link `spectraweaver up` prints),
  * otherwise with a password or a pasted token. A bookmark of the plain URL is enough once a
  * password is set.
  */
@@ -68,7 +68,7 @@ function showLoginForm(app: HTMLElement, info: LoginInfo): Promise<void> {
     const hint = el("p", { class: "hint" });
     const toggle = el("button", { type: "button", class: "link-btn" });
     const form = el("form", { class: "login" }, [
-      el("h1", {}, ["workstreams"]),
+      el("h1", {}, ["SpectraWeaver"]),
       who,
       username,
       secret,
@@ -88,9 +88,9 @@ function showLoginForm(app: HTMLElement, info: LoginInfo): Promise<void> {
         ...(useToken
           ? [
               "Run ",
-              el("code", {}, ["workstreams token"]),
+              el("code", {}, ["spectraweaver token"]),
               " on the server. To sign in with a password next time, set one with ",
-              el("code", {}, ["workstreams passwd"]),
+              el("code", {}, ["spectraweaver passwd"]),
               ".",
             ]
           : []),

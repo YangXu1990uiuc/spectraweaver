@@ -1,10 +1,10 @@
-# workstreams — Design
+# SpectraWeaver — Design
 
-Status: draft v0.1, 2026-09-23. `workstreams` is a working name. License: Apache-2.0.
+Status: draft v0.1, 2026-09-23. License: Apache-2.0.
 
 ## 1. Summary
 
-workstreams is a self-hosted web app that keeps many long-lived terminal sessions running on a Linux or macOS dev server and shows all of them in the browser. You can close the tab, lose the network, or open the page from another computer: the sessions keep running, and every device sees the same terminals, banners and layout.
+SpectraWeaver is a self-hosted web app that keeps many long-lived terminal sessions running on a Linux or macOS dev server and shows all of them in the browser. You can close the tab, lose the network, or open the page from another computer: the sessions keep running, and every device sees the same terminals, banners and layout.
 
 It is built for running many CLI coding agents in parallel (Claude Code, Codex CLI, Gemini CLI, and others). Every session is a plain terminal, so any CLI works.
 
@@ -37,9 +37,9 @@ It is built for running many CLI coding agents in parallel (Claude Code, Codex C
 - **Windows as the server OS.** Bun.Terminal is POSIX-only. Windows is fully supported as a browser client.
 - **Unlimited scrollback inside the browser.**
 
-### 1.4 A day with workstreams
+### 1.4 A day with SpectraWeaver
 
-1. **Start it.** On the server, `workstreams up` starts the daemon and the server and prints a login link. After setting a password (`workstreams passwd`, or in Settings), a bookmark of the plain URL is enough.
+1. **Start it.** On the server, `spectraweaver up` starts the daemon and the server and prints a login link. After setting a password (`spectraweaver passwd`, or in Settings), a bookmark of the plain URL is enough.
 2. **Open it.** Open the link through an SSH tunnel or HTTPS, preferably as an app window (§6.3).
 3. **Create sessions.** Make a tab per workstream, such as "agents" and "infra", each with its own grid and URL. Click "New terminal": the size is pre-filled to fit the tab's grid; add a working directory and an optional startup command. A tile appears; give it a banner: "auth refactor".
 4. **Switch devices.** Run `claude` in a few tiles, close the laptop, and open the page on the desktop. Everything is where it was. One tile shows **needs input**; click it and answer.
@@ -64,12 +64,12 @@ Browser (any device)
   xterm.js views · layouts · banners · per-OS keymap
         │  HTTPS/WSS, or an SSH tunnel to localhost
         ▼
-workstreams server   (restart any time)
+spectraweaver server   (restart any time)
   HTTP + WebSocket gateway · auth · status engine · agent hook endpoint
   tabs / banners in JSON files (no SQLite: its locking is unreliable on NFS) · static UI
         │  Unix socket, versioned protocol
         ▼
-workstreams daemon   (small, rarely restarted)
+spectraweaver daemon   (small, rarely restarted)
   PTYs (Bun.Terminal) · one @xterm/headless engine per session
   mode tracker · query responder · ring buffer · raw logs
         │
@@ -77,7 +77,7 @@ workstreams daemon   (small, rarely restarted)
 $SHELL → claude / codex / gemini / anything
 ```
 
-One binary provides both processes plus the CLI (§11): `workstreams daemon`, `workstreams server`, and `workstreams up`, which starts whichever of the two is not running.
+One binary provides both processes plus the CLI (§11): `spectraweaver daemon`, `spectraweaver server`, and `spectraweaver up`, which starts whichever of the two is not running.
 
 ### 3.1 Who owns what
 
@@ -92,8 +92,8 @@ One binary provides both processes plus the CLI (§11): `workstreams daemon`, `w
 
 ### 3.2 Process lifecycle
 
-- **Services.** Where systemd is available, both processes run as `systemd --user` services, set up by `workstreams install-service`. `loginctl enable-linger` keeps them running after logout.
-  - Without systemd, `workstreams up` daemonizes with `setsid`.
+- **Services.** Where systemd is available, both processes run as `systemd --user` services, set up by `spectraweaver install-service`. `loginctl enable-linger` keeps them running after logout.
+  - Without systemd, `spectraweaver up` daemonizes with `setsid`.
   - On distros with `KillUserProcesses=yes` (the upstream systemd default; Ubuntu ships `no`), processes started from an SSH login die at logout unless linger is enabled.
 - **Server restarts are free** (upgrades, crashes).
 - **Daemon restarts are never automatic** on upgrade.
@@ -107,25 +107,26 @@ One binary provides both processes plus the CLI (§11): `workstreams daemon`, `w
 
 Company home directories are often small and shared over NFS by several hosts, so config and state are separate, and state can live anywhere.
 
-- **Config** is a few kilobytes, shared by all of the user's hosts: `$XDG_CONFIG_HOME/workstreams/` (default `~/.config/workstreams/`), or `$WORKSTREAMS_CONFIG_DIR`, or `$WORKSTREAMS_HOME/config`. It holds, all mode 0600:
+- **Config** is a few kilobytes, shared by all of the user's hosts: `$XDG_CONFIG_HOME/spectraweaver/` (default `~/.config/spectraweaver/`), or `$SPECTRAWEAVER_CONFIG_DIR`, or `$SPECTRAWEAVER_HOME/config`. It holds, all mode 0600:
   - `auth.token`;
   - `password`: an argon2id hash, present only if a password is set, so one password works on every host;
   - `config.json`: settings, currently only `stateDir`.
 - **State** goes in a **per-host directory** `<state base>/<hostname>/`, because hosts sharing an NFS home must not share a socket, pid files or tabs. The state base is, in order of precedence:
-  1. `$WORKSTREAMS_STATE_DIR`;
-  2. `$WORKSTREAMS_HOME/state`;
-  3. `stateDir` in `config.json`, set with `workstreams config state-dir PATH`; this is the way to keep state on a local or bigger disk without setting environment variables everywhere;
-  4. `$XDG_STATE_HOME/workstreams/` (default `~/.local/state/workstreams/`).
+  1. `$SPECTRAWEAVER_STATE_DIR`;
+  2. `$SPECTRAWEAVER_HOME/state`;
+  3. `stateDir` in `config.json`, set with `spectraweaver config state-dir PATH`; this is the way to keep state on a local or bigger disk without setting environment variables everywhere;
+  4. `$XDG_STATE_HOME/spectraweaver/` (default `~/.local/state/spectraweaver/`).
 - **A host's state directory holds:**
   - `daemon.sock`, `daemon.pid`, `server.json`, and the daemon and server logs (rotated at 5 MB);
   - `instance.json`: the instance id (names the login cookie) and the remembered port and host;
   - `meta.json`: tabs, banners and which tab each session belongs to;
   - `sessions/<id>/`, with log segments and the last snapshot (later; potentially large, hence the movable state directory).
-- **Moving state.** `workstreams config state-dir` refuses while workstreams runs (the running daemon would be lost track of) and copies the tabs and instance settings to the new place.
+- **Moving state.** `spectraweaver config state-dir` refuses while SpectraWeaver runs (the running daemon would be lost track of) and copies the tabs and instance settings to the new place.
+- **Older directories.** Earlier versions kept state directly in the state base (the flat layout), and the project was first called workstreams (`~/.config/workstreams/`, `~/.local/state/workstreams/`). A daemon started in an older directory keeps using it while it runs, so upgrading only the server keeps every session. `up` copies the former config directory rather than moving it, because other hosts sharing it may still run the old version. Once no daemon runs in an older state directory, `up` moves this host's `meta.json` and `instance.json` out of it.
 - **Why not `$XDG_RUNTIME_DIR`:** without linger, it is deleted when the user's last login session ends.
 - **Permissions:** directories 0700, files and sockets 0600.
 
-**NFS.** workstreams never uses file locks and never uses SQLite, the usual causes of trouble on NFS (VS Code Server's lock files are an example). Every file is written to a temporary name and renamed into place, which is atomic on NFS, and nothing relies on inotify. Changes made on another host (a new password, say) are noticed by polling file stamps, after the NFS attribute cache expires. The one NFS-sensitive piece is the daemon's Unix socket file:
+**NFS.** SpectraWeaver never uses file locks and never uses SQLite, the usual causes of trouble on NFS (VS Code Server's lock files are an example). Every file is written to a temporary name and renamed into place, which is atomic on NFS, and nothing relies on inotify. Changes made on another host (a new password, say) are noticed by polling file stamps, after the NFS attribute cache expires. The one NFS-sensitive piece is the daemon's Unix socket file:
 - per-host directories keep other hosts from mistaking it for a stale socket and deleting it;
 - some NFS servers refuse to create socket files; the daemon then says so and suggests a local state directory;
 - `up`, `status` and `config` point out when the state directory is on a network filesystem (NFS, SMB, Lustre, GPFS, CephFS, AFS), since a local disk is faster.
@@ -234,7 +235,7 @@ Nothing a viewer does sends a resize to the PTY:
 ### 4.6 Consistency rules
 
 - **Same engine version and width tables.** The daemon's engine and every browser use the same xterm.js version (both are bundled into one binary) and the same Unicode width provider (the unicode11 addon on both sides). Otherwise CJK and emoji widths differ and cursor positions drift.
-- **`workstreams attach` never resizes the session.**
+- **`spectraweaver attach` never resizes the session.**
   - It runs in a real terminal, which cannot be scaled.
   - If the local terminal is smaller than the session, it warns. The local view wraps or crops; the session itself is unaffected.
 
@@ -247,8 +248,8 @@ Nothing a viewer does sends a resize to the PTY:
 - **Startup command.** An optional startup command, such as `claude`, is sent to the interactive shell as type-ahead input, like VS Code's `sendText`. When the command exits, the user is back at a prompt, and the command is in shell history.
 - **Environment added:**
   - `TERM=xterm-256color`, `COLORTERM=truecolor`
-  - `TERM_PROGRAM=workstreams`, `TERM_PROGRAM_VERSION`
-  - `WORKSTREAMS_SESSION_ID`, `WORKSTREAMS_HOOK_TOKEN` (a per-session secret), `WORKSTREAMS_URL`
+  - `TERM_PROGRAM=spectraweaver`, `TERM_PROGRAM_VERSION`
+  - `SPECTRAWEAVER_SESSION_ID`, `SPECTRAWEAVER_HOOK_TOKEN` (a per-session secret), `SPECTRAWEAVER_URL`
   - A UTF-8 locale if none is set.
 - **Environment removed:** variables that belong to the terminal the daemon was started from: `VSCODE_*`, `TMUX`, `STY`, and the inherited `TERM_PROGRAM`.
 
@@ -295,7 +296,7 @@ When a snapshot is taken, the tracker appends the sequences that re-establish th
 ### 5.4 One responder for terminal queries
 
 - **Why.** Programs probe the terminal, mostly at startup: DA1/DA2, DSR/CPR, DECRQM, the kitty keyboard query `CSI ? u`, XTVERSION, OSC 10/11 colours. Exactly one party must answer, however many browsers are attached:
-  - **No browser attached:** nobody answers, so programs time out and degrade (Codex falls back to defaults after 250 ms). This happens for sessions started from the CLI or a script (`workstreams new -- codex`, or an agent opening a helper session), for revived sessions, and for anything launched just before the last tab closed.
+  - **No browser attached:** nobody answers, so programs time out and degrade (Codex falls back to defaults after 250 ms). This happens for sessions started from the CLI or a script (`spectraweaver new -- codex`, or an agent opening a helper session), for revived sessions, and for anything launched just before the last tab closed.
   - **Two or more browsers attached:** every browser answers, so the program receives duplicate replies. The extra replies arrive as input and show up as garbage, such as `^[[?1;2c` at a shell prompt.
 - **The daemon's engine answers.** Headless xterm already answers DA, CPR and mode queries (tested). OSC 10/11 and XTVERSION still need checking; if they are missing, add handlers that answer with the configured theme colours. The engine's `onData` output is written back to the PTY.
 - **Browser xterms must not answer.** Register client-side handlers that swallow query sequences (return `true`), while still applying mode changes.
@@ -374,7 +375,7 @@ When a snapshot is taken, the tracker appends the sequences that re-establish th
 
 ### 6.4 Tile header (the banner)
 
-- **Title.** User-set text, stored on the server and editable in place. It can also be set from inside the session with `workstreams banner "…"`, so an agent can be asked to keep its own banner current.
+- **Title.** User-set text, stored on the server and editable in place. It can also be set from inside the session with `spectraweaver banner "…"`, so an agent can be asked to keep its own banner current.
 - **Subtitle (automatic).** Whichever changed most recently:
   - the program's terminal title (OSC 0/2): Claude Code and Codex both set one, and Codex shows `[ ! ] Action Required` while it waits;
   - the last submitted prompt, from Claude Code's `UserPromptSubmit` hook.
@@ -450,9 +451,9 @@ When a snapshot is taken, the tracker appends the sequences that re-establish th
 
 ### 8.3 Agent integrations
 
-All integrations are opt-in, installed with `workstreams hooks install <agent>`, and do nothing outside workstreams sessions. Installers merge into existing config files, with a backup, and never overwrite them.
+All integrations are opt-in, installed with `spectraweaver hooks install <agent>`, and do nothing outside SpectraWeaver sessions. Installers merge into existing config files, with a backup, and never overwrite them.
 
-- **Claude Code.** Command hooks call `workstreams hook claude-code`, which exits silently when `WORKSTREAMS_SESSION_ID` is unset or the server is unreachable.
+- **Claude Code.** Command hooks call `spectraweaver hook claude-code`, which exits silently when `SPECTRAWEAVER_SESSION_ID` is unset or the server is unreachable.
 
   | Event | Use |
   |---|---|
@@ -461,7 +462,7 @@ All integrations are opt-in, installed with `workstreams hooks install <agent>`,
   | `UserPromptSubmit` | subtitle |
   | `SessionStart` | `session_id`, for revive |
 
-  Claude Code also supports `http` hooks with environment-variable interpolation in headers, but outside workstreams a command hook fails more quietly.
+  Claude Code also supports `http` hooks with environment-variable interpolation in headers, but outside SpectraWeaver a command hook fails more quietly.
 - **Codex:**
   - `Stop` and `PermissionRequest` hooks;
   - the `notify` program, which runs when a turn completes;
@@ -469,12 +470,12 @@ All integrations are opt-in, installed with `workstreams hooks install <agent>`,
 
   Title parsing works without any configuration.
 - **Gemini CLI.** Enable `general.enableNotifications`, which makes it send OSC 777.
-- **Hook authentication.** Hook requests carry `WORKSTREAMS_SESSION_ID` and `WORKSTREAMS_HOOK_TOKEN`, so the server can attribute and authenticate them.
+- **Hook authentication.** Hook requests carry `SPECTRAWEAVER_SESSION_ID` and `SPECTRAWEAVER_HOOK_TOKEN`, so the server can attribute and authenticate them.
 
 ### 8.4 Surfacing status
 
 - Badges on tiles and filmstrip cards.
-- A count in the tab title, for example "(2) workstreams".
+- A count in the tab title, for example "(2) SpectraWeaver".
 - Optional desktop notifications and sound (these need a secure context).
 
 ## 9. Security
@@ -491,8 +492,8 @@ The UI is a shell. Adversaries:
 
 - **Listening.** Listen on 127.0.0.1 by default (a Unix socket, mode 0600, is planned). Binding any other address requires `--allow-remote` and prints a warning, because the server speaks plain HTTP; a specific bound address is added to the Host allowlist automatically, wildcards need `--allow-host`. The page also refuses to run inside another site's frame (clickjacking); `SameSite=Strict` already keeps framed copies signed out.
 - **Authentication** is always on, even on localhost, because other local users can reach 127.0.0.1.
-  - **Token.** The first run generates a random token, stored in a 0600 file. `workstreams up` prints a login link with it in the URL fragment; the page exchanges it for a cookie and removes it from the address bar and history. `workstreams token --rotate` replaces it.
-  - **Password (optional).** Set with `workstreams passwd` or in Settings, and stored as an argon2id hash. Once it is set, a bookmark of the plain URL is enough: the login page shows `user @ host`, so it is clear whose instance it is, and asks for the password.
+  - **Token.** The first run generates a random token, stored in a 0600 file. `spectraweaver up` prints a login link with it in the URL fragment; the page exchanges it for a cookie and removes it from the address bar and history. `spectraweaver token --rotate` replaces it.
+  - **Password (optional).** Set with `spectraweaver passwd` or in Settings, and stored as an argon2id hash. Once it is set, a bookmark of the plain URL is enough: the login page shows `user @ host`, so it is clear whose instance it is, and asks for the password.
   - **Guessing is throttled.** Every local user connects from 127.0.0.1, so the limit is global: after five straight failures, each attempt waits out a lockout that doubles, up to 15 minutes. Token logins are exempt, since tokens cannot be guessed.
   - **The cookie** is HttpOnly and `SameSite=Strict`, marked `Secure` over HTTPS. Its value is an HMAC of the token and the password hash, not a stored session, so logins survive server restarts, while rotating the token or changing the password signs out every browser. Changing the password also drops all open WebSockets.
   - **The cookie name includes the instance id.** Browsers scope cookies by host, not port, so two instances tunnelled to localhost:7777 and localhost:7778 would otherwise overwrite each other's login.
@@ -511,12 +512,12 @@ The UI is a shell. Adversaries:
 
 Each Unix user runs their own instance; nothing is shared between users.
 - **State is per user and per host.** Sockets, tokens, passwords and sessions live in each user's own directories, owner-only; each host gets its own state directory even when the home directory is shared over NFS (§3.3).
-- **Ports.** The first `workstreams up` takes the first free port from 7777 and remembers it, so URLs and bookmarks stay stable. An explicit `--port` also sticks. If the remembered port is later taken, `up` stops and says so instead of silently moving.
+- **Ports.** The first `spectraweaver up` takes the first free port from 7777 and remembers it, so URLs and bookmarks stay stable. An explicit `--port` also sticks. If the remembered port is later taken, `up` stops and says so instead of silently moving.
 - **Telling instances apart.** `/api/health` reports the server's uid, and `up` accepts a server as its own only if the uid matches. Otherwise, on a shared machine, it could mistake another user's server on the same port for its own and print a link to it.
 
 ### 9.4 Remote access, in order of preference
 
-1. **An SSH local forward**, either to the TCP port or straight to the server's Unix socket: `ssh -L 7777:/home/me/.local/state/workstreams/server.sock host`. The page is then served from localhost, which browsers treat as a secure context.
+1. **An SSH local forward**, either to the TCP port or straight to the server's Unix socket: `ssh -L 7777:/home/me/.local/state/spectraweaver/server.sock host`. The page is then served from localhost, which browsers treat as a secure context.
 2. **Tailscale Serve.** Valid certificates and tailnet-only access. Hostnames appear in public certificate-transparency logs.
 3. **A reverse proxy** with TLS.
 4. **Built-in TLS** with a user-provided certificate.
@@ -532,15 +533,15 @@ Each Unix user runs their own instance; nothing is shared between users.
   - Linux: glibc 2.17 or later (musl builds for Alpine and others); kernel 3.10 or later (Bun recommends 5.6 or later).
   - macOS.
   - No root, no tmux, no Node.
-- **Install.** A binary from GitHub Releases plus an install script. `workstreams install-service` writes the `systemd --user` units (daemon and server) and explains linger.
+- **Install.** A binary from GitHub Releases plus an install script. `spectraweaver install-service` writes the `systemd --user` units (daemon and server) and explains linger.
 - **Upgrades.** Replace the binary and restart the server unit. Daemon upgrades need the user's confirmation (§3.2).
 - **Memory.** A Bun process holding one 10k-line engine at 200 columns measured 112 MB RSS. Each additional session costs about 17 MB at 120 columns with 10k lines of scrollback.
 - **License: Apache-2.0.** The repo root holds `LICENSE` (the official text) and `NOTICE`.
   - Every source file starts with this header:
     ```ts
-    // Copyright 2026 The workstreams Authors
+    // Copyright 2026 The SpectraWeaver Authors
     // SPDX-License-Identifier: Apache-2.0
-    // Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+    // Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
     ```
   - Anyone who redistributes source derived from these files must keep those notices (Apache-2.0 §4(c)), and derivative distributions must carry the `NOTICE` attributions (§4(d)).
   - CI fails if a source file lacks the header, for example using `addlicense -check`.
@@ -549,21 +550,21 @@ Each Unix user runs their own instance; nothing is shared between users.
 ## 11. CLI
 
 ```
-workstreams up [--host ADDR --allow-remote] | down | status
+spectraweaver up [--host ADDR --allow-remote] | down | status
                                         start/stop daemon + server, show state
-workstreams daemon | server             service entry points
-workstreams new [--name N] [--size 120x36] [--cwd DIR] [-- CMD...]
-workstreams ls
-workstreams attach <session>            emergency access from any terminal (detach: Ctrl+] twice)
-workstreams banner [<session>] <text>   session defaults to $WORKSTREAMS_SESSION_ID
-workstreams kill <session>
-workstreams hook <agent>                agent hook entry point (JSON on stdin)
-workstreams hooks install <agent>
-workstreams install-service
-workstreams passwd [--clear]            set or remove the browser sign-in password
-workstreams config                      show where config and state live
-workstreams config state-dir PATH|--reset  move this host's state, e.g. off a small or NFS home
-workstreams token [--rotate]
+spectraweaver daemon | server             service entry points
+spectraweaver new [--name N] [--size 120x36] [--cwd DIR] [-- CMD...]
+spectraweaver ls
+spectraweaver attach <session>            emergency access from any terminal (detach: Ctrl+] twice)
+spectraweaver banner [<session>] <text>   session defaults to $SPECTRAWEAVER_SESSION_ID
+spectraweaver kill <session>
+spectraweaver hook <agent>                agent hook entry point (JSON on stdin)
+spectraweaver hooks install <agent>
+spectraweaver install-service
+spectraweaver passwd [--clear]            set or remove the browser sign-in password
+spectraweaver config                      show where config and state live
+spectraweaver config state-dir PATH|--reset  move this host's state, e.g. off a small or NFS home
+spectraweaver token [--rotate]
 ```
 
 ## 12. Testing
@@ -636,7 +637,7 @@ workstreams token [--rotate]
 | [ttyd](https://github.com/tsl0922/ttyd), GoTTY, WeTTY (+ tmux) | One command per URL; tmux's UX. |
 | `claude --bg` / `claude agents` | Official, Claude Code only, terminal UI only. |
 
-What workstreams does differently:
+What SpectraWeaver does differently:
 - **The size invariant:** viewers never garble sessions.
 - **VS Code parity:** same engine, same keymaps.
 - **Agent status without wrapping agents.**

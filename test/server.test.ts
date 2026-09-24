@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
@@ -271,7 +271,7 @@ test("password guessing locks out after five failures; the token still works", a
 test("if the token file goes missing, nothing signs in (no empty-token fallback)", async () => {
   const token = readFileSync(paths.tokenFile, "utf8");
   const hash = existsSync(paths.passwordFile) ? readFileSync(paths.passwordFile, "utf8").trim() : "";
-  const emptyKeyCookie = createHmac("sha256", "").update(`workstreams-cookie-v2\0${hash}`).digest("base64url");
+  const emptyKeyCookie = createHmac("sha256", "").update(`spectraweaver-cookie-v2\0${hash}`).digest("base64url");
   const name = cookie.split("=")[0]!;
   rmSync(paths.tokenFile);
   try {

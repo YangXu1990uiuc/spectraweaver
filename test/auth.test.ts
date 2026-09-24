@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -49,7 +49,7 @@ test("a specific bound address is allowed as Host; loopback and wildcards add no
 });
 
 test("credentials fail closed when the token file disappears or is truncated", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ws-auth-"));
+  const dir = mkdtempSync(join(tmpdir(), "sw-auth-"));
   try {
     const tokenFile = join(dir, "auth.token");
     const credentials = new Credentials(tokenFile, join(dir, "password"));

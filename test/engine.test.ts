@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal } from "@xterm/headless";
@@ -101,7 +101,7 @@ test("answers colour and version queries and reports notifications", async () =>
   await write("\x1b]11;?\x1b\\\x1b]10;?\x07\x1b[>q\x1b[c");
   expect(replies).toContain("\x1b]11;rgb:1f1f/1f1f/1f1f\x1b\\");
   expect(replies).toContain("\x1b]10;rgb:cccc/cccc/cccc\x1b\\");
-  expect(replies.some((reply) => reply.startsWith("\x1bP>|workstreams("))).toBe(true);
+  expect(replies.some((reply) => reply.startsWith("\x1bP>|spectraweaver("))).toBe(true);
   expect(replies).toContain("\x1b[?1;2c");
 
   await write("\x1b]9;4;1;50\x07\x1b]9;build done\x07\x1b]777;notify;Claude;needs input\x07");

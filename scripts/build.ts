@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 // Builds single-file executables with the UI embedded. Pass targets to build a subset:
 //   bun run scripts/build.ts bun-linux-arm64
@@ -20,7 +20,7 @@ for (const target of requested.length > 0 ? requested : TARGETS) {
     console.error(`unknown target ${target}; choose from ${TARGETS.join(", ")}`);
     process.exit(1);
   }
-  const outfile = `dist/workstreams-${target.replace(/^bun-/, "")}`;
+  const outfile = `dist/spectraweaver-${target.replace(/^bun-/, "")}`;
   console.log(`building ${outfile}`);
   const result = Bun.spawnSync(
     [process.execPath, "build", "--compile", "--minify", `--target=${target}`, "src/cli.ts", "--outfile", outfile],

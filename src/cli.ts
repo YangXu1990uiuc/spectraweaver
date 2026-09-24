@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { loadInstance, loadSettings, migrateFlatState, saveInstance, saveSettings } from "./common/config.ts";
+import { loadInstance, loadSettings, migrateOlderState, saveInstance, saveSettings } from "./common/config.ts";
 import { networkFilesystem, writeFileAtomic } from "./common/files.ts";
 import { isLoopbackAddress, pickFreePort, portIsFree } from "./common/net.ts";
 import { ensurePrivateDir, expandHome, hostKey, MAX_SOCKET_PATH, type Paths, resolvePaths } from "./common/paths.ts";
@@ -29,29 +29,29 @@ const DEFAULT_HOST = "127.0.0.1";
 const BOOLEAN_FLAGS = new Set(["all", "clear", "rotate", "reset", "allow-remote"]);
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
-const USAGE = `workstreams ${VERSION}: persistent terminals in the browser
+const USAGE = `spectraweaver ${VERSION}: persistent terminals in the browser
 
 Usage:
-  workstreams up [--port N] [--host ADDR --allow-remote] [--allow-host NAME]...
+  spectraweaver up [--port N] [--host ADDR --allow-remote] [--allow-host NAME]...
                         start the daemon and the server in the background
                         (the first run picks a free port from ${FIRST_PORT} and remembers it;
                         listening beyond localhost needs --allow-remote: see SECURITY.md)
-  workstreams down [--all]
+  spectraweaver down [--all]
                         stop the server; --all also stops the daemon, ending every session
-  workstreams status    show what is running
-  workstreams passwd [--clear]
+  spectraweaver status    show what is running
+  spectraweaver passwd [--clear]
                         set (or remove) the password for signing in from the browser
-  workstreams token [--rotate]
+  spectraweaver token [--rotate]
                         print the login token and link; --rotate replaces it
-  workstreams new [--size 120x36] [--cwd DIR] [-- COMMAND...]
+  spectraweaver new [--size 120x36] [--cwd DIR] [-- COMMAND...]
                         create a session (COMMAND is typed into its shell)
-  workstreams ls        list sessions
-  workstreams config    show where config and state live
-  workstreams config state-dir PATH | --reset
+  spectraweaver ls        list sessions
+  spectraweaver config    show where config and state live
+  spectraweaver config state-dir PATH | --reset
                         keep state (socket, logs, tabs) under PATH, e.g. on a local disk
                         when the home directory is small or on NFS
-  workstreams daemon    run the daemon in the foreground
-  workstreams server [--port N] [--host ADDR --allow-remote] [--allow-host NAME]...
+  spectraweaver daemon    run the daemon in the foreground
+  spectraweaver server [--port N] [--host ADDR --allow-remote] [--allow-host NAME]...
                         run the server in the foreground
 `;
 
@@ -98,18 +98,18 @@ function fail(message: string): never {
 }
 
 /**
- * workstreams is a shell in a web page, so listening beyond localhost needs an explicit
+ * SpectraWeaver is a shell in a web page, so listening beyond localhost needs an explicit
  * --allow-remote. A remembered non-loopback host counts as an earlier opt-in.
  */
 function checkRemoteExposure(host: string, optedIn: boolean): void {
   if (isLoopbackAddress(host)) return;
   if (!optedIn) {
     fail(
-      `Refusing to listen on ${host}. workstreams gives a shell to whoever signs in, and this would make it\n` +
+      `Refusing to listen on ${host}. SpectraWeaver gives a shell to whoever signs in, and this would make it\n` +
         "reachable from the network over plain HTTP (passwords and terminal contents unencrypted).\n" +
         "Keep the default (127.0.0.1) and reach it through an SSH tunnel or a VPN. If you really mean it,\n" +
         "for example behind an HTTPS reverse proxy on a trusted network, add --allow-remote.\n" +
-        "Never expose workstreams to the internet. See SECURITY.md.",
+        "Never expose SpectraWeaver to the internet. See SECURITY.md.",
     );
   }
   console.error(
@@ -150,14 +150,14 @@ function daemonCall<T>(paths: Paths, request: DaemonRequest): Promise<T> {
         connected.write(encodeJsonFrame({ ...request, t: "req", id: 1 }));
         timer = setTimeout(() => settle(() => reject(new Error("the daemon did not answer"))), 5000);
       })
-      .catch(() => settle(() => reject(new Error("the daemon is not running (start it with `workstreams up`)"))));
+      .catch(() => settle(() => reject(new Error("the daemon is not running (start it with `spectraweaver up`)"))));
   });
 }
 
 async function daemonHello(paths: Paths): Promise<HelloResult | null> {
   if (!existsSync(paths.daemonSocket)) return null;
   try {
-    return await daemonCall<HelloResult>(paths, { op: "hello", protocol: 1, client: "workstreams-cli" });
+    return await daemonCall<HelloResult>(paths, { op: "hello", protocol: 1, client: "spectraweaver-cli" });
   } catch {
     return null;
   }
@@ -178,7 +178,7 @@ function spawnDetached(argv: string[], logFile: string): void {
   }
   const out = openSync(logFile, "a", 0o600);
   // A new session (setsid) and no controlling terminal: closing the terminal that ran
-  // `workstreams up` must not take the daemon with it.
+  // `spectraweaver up` must not take the daemon with it.
   const child = spawn(argv[0]!, argv.slice(1), {
     detached: true,
     stdio: ["ignore", out, out],
@@ -220,7 +220,7 @@ function serverUrl(host: string, port: number): string {
   return `http://${shown}:${port}`;
 }
 
-/** The server's health report, or null if nothing (or not workstreams) answers there. */
+/** The server's health report, or null if nothing (or not SpectraWeaver) answers there. */
 async function probeServer(url: string): Promise<{ uid: number | null } | null> {
   try {
     const response = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(1000) });
@@ -271,9 +271,9 @@ async function readSecret(prompt: string): Promise<string> {
 
 async function cmdUp(args: string[]): Promise<void> {
   const flags = parseFlags(args, ["port", "host", "allow-host", "allow-remote"]);
+  for (const change of migrateOlderState(resolvePaths())) console.log(change);
   const paths = resolvePaths();
   ensurePrivateDir(paths.stateDir);
-  for (const name of migrateFlatState(paths)) console.log(`moved   ${name} into ${paths.stateDir}`);
   const instance = loadInstance(paths);
   const requestedPort = flag(flags, "port");
   const host = flag(flags, "host") ?? instance.host ?? DEFAULT_HOST;
@@ -295,7 +295,7 @@ async function cmdUp(args: string[]): Promise<void> {
   if (running) {
     url = serverUrl(running.host, running.port);
     if (requestedPort && Number(requestedPort) !== running.port) {
-      fail(`the server already runs on port ${running.port}; run \`workstreams down\` first to change it`);
+      fail(`the server already runs on port ${running.port}; run \`spectraweaver down\` first to change it`);
     }
     if (!(await waitFor(() => isOwnServer(url), 5000))) {
       fail(`the server (pid ${running.pid}) is not responding; see ${paths.serverLog}`);
@@ -315,8 +315,8 @@ async function cmdUp(args: string[]): Promise<void> {
       const holder = !other
         ? "another program"
         : other.uid === (process.getuid?.() ?? null)
-          ? "another workstreams instance of yours (a different state directory)"
-          : "another user's workstreams";
+          ? "another SpectraWeaver instance of yours (a different state directory)"
+          : "another user's SpectraWeaver";
       fail(`port ${port} is used by ${holder}; choose another with --port`);
     }
     url = serverUrl(host, port);
@@ -336,7 +336,7 @@ async function cmdUp(args: string[]): Promise<void> {
   const remote = networkFilesystem(paths.stateDir);
   if (remote) {
     console.log(
-      `        (on ${remote}: this works, but a local disk is faster; see \`workstreams config state-dir\`)`,
+      `        (on ${remote}: this works, but a local disk is faster; see \`spectraweaver config state-dir\`)`,
     );
   }
 
@@ -346,7 +346,7 @@ async function cmdUp(args: string[]): Promise<void> {
   } else {
     const { loadOrCreateToken } = await import("./server/auth.ts");
     console.log(`\nOpen ${url}/#token=${loadOrCreateToken(paths.tokenFile)}`);
-    console.log(`Tip: run \`workstreams passwd\` to sign in with a password instead, then bookmark ${url}/`);
+    console.log(`Tip: run \`spectraweaver passwd\` to sign in with a password instead, then bookmark ${url}/`);
   }
   const port = new URL(url).port;
   if (["127.0.0.1", "localhost", "::1"].includes(running?.host ?? host)) {
@@ -398,7 +398,7 @@ async function cmdPasswd(args: string[]): Promise<void> {
   const { clearPassword, setPassword, validatePassword } = await import("./server/auth.ts");
   if (flag(flags, "clear")) {
     clearPassword(paths.passwordFile);
-    console.log("Password removed. Sign in with the token link from `workstreams token`.");
+    console.log("Password removed. Sign in with the token link from `spectraweaver token`.");
     return;
   }
   const password = await readSecret("New password: ");
@@ -458,6 +458,7 @@ async function cmdConfig(args: string[]): Promise<void> {
   const [key, ...rest] = args;
   if (key === undefined) {
     console.log(`config  ${paths.configDir}   (token, password hash, settings; shared by your hosts)`);
+    if (paths.pendingConfigDir) console.log(`        the former name's; \`spectraweaver up\` copies it to ${paths.pendingConfigDir}`);
     console.log(`state   ${paths.stateDir}   (this host: socket, logs, tabs)`);
     console.log(`        from ${paths.stateSource}`);
     const remote = networkFilesystem(paths.stateDir);
@@ -466,14 +467,14 @@ async function cmdConfig(args: string[]): Promise<void> {
   }
   if (key !== "state-dir") fail(`unknown setting: ${key}\n\n${USAGE}`);
   const flags = parseFlags(rest, ["reset"]);
-  if (process.env.WORKSTREAMS_STATE_DIR || process.env.WORKSTREAMS_HOME) {
-    console.log("Note: $WORKSTREAMS_STATE_DIR / $WORKSTREAMS_HOME is set and takes precedence over this setting.");
+  if (process.env.SPECTRAWEAVER_STATE_DIR || process.env.SPECTRAWEAVER_HOME) {
+    console.log("Note: $SPECTRAWEAVER_STATE_DIR / $SPECTRAWEAVER_HOME is set and takes precedence over this setting.");
   }
   // Moving state under a running daemon would lose track of it (and of its sessions).
   if ((await daemonHello(paths)) || readServerState(paths)) {
     fail(
-      `workstreams is running with state in ${paths.stateDir}.\n` +
-        "Stop it first with `workstreams down --all` (this ends every session), then run this again.",
+      `SpectraWeaver is running with state in ${paths.stateDir}.\n` +
+        "Stop it first with `spectraweaver down --all` (this ends every session), then run this again.",
     );
   }
   const settings = loadSettings(paths);
@@ -481,7 +482,7 @@ async function cmdConfig(args: string[]): Promise<void> {
     delete settings.stateDir;
   } else {
     const target = flags.rest[0];
-    if (!target) fail("usage: workstreams config state-dir PATH | --reset");
+    if (!target) fail("usage: spectraweaver config state-dir PATH | --reset");
     const base = resolve(expandHome(target));
     const socket = join(base, hostKey(), "daemon.sock");
     if (socket.length > MAX_SOCKET_PATH) {
@@ -508,8 +509,8 @@ async function cmdConfig(args: string[]): Promise<void> {
 }
 
 async function cmdDaemon(): Promise<void> {
+  migrateOlderState(resolvePaths());
   const paths = resolvePaths();
-  migrateFlatState(paths);
   const { startDaemon } = await import("./daemon/daemon.ts");
   const handle = await startDaemon({ paths }).catch((error: Error) => fail(error.message));
   writeFileAtomic(paths.daemonPidFile, `${process.pid}\n`);
@@ -524,8 +525,8 @@ async function cmdDaemon(): Promise<void> {
 
 async function cmdServer(args: string[]): Promise<void> {
   const flags = parseFlags(args, ["port", "host", "allow-host", "allow-remote"]);
+  migrateOlderState(resolvePaths());
   const paths = resolvePaths();
-  migrateFlatState(paths);
   const instance = loadInstance(paths);
   const host = flag(flags, "host") ?? instance.host ?? DEFAULT_HOST;
   checkRemoteExposure(host, flag(flags, "allow-remote") !== undefined || instance.host === host);
@@ -535,7 +536,7 @@ async function cmdServer(args: string[]): Promise<void> {
     host,
     port: Number(flag(flags, "port") ?? instance.port ?? FIRST_PORT),
     allowHosts: flags.values.get("allow-host") ?? [],
-    development: process.env.WORKSTREAMS_DEV === "1",
+    development: process.env.SPECTRAWEAVER_DEV === "1",
   }).catch((error: Error) => fail(error.message));
   const state: ServerState = { pid: process.pid, host, port: handle.port };
   writeFileAtomic(paths.serverStateFile, `${JSON.stringify(state)}\n`);

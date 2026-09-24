@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "workstreams",
+      "name": "spectraweaver",
       "dependencies": {
         "@xterm/addon-clipboard": "0.2.0",
         "@xterm/addon-serialize": "0.14.0",

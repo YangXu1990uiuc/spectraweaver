@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -13,7 +13,7 @@ export const MIN_PASSWORD_LENGTH = 8;
 const MAX_PASSWORD_LENGTH = 1024;
 
 export function cookieName(instanceId: string): string {
-  return `workstreams_${instanceId}`;
+  return `spectraweaver_${instanceId}`;
 }
 
 /** Tokens are 32 characters; a shorter one is replaced at startup and refused afterwards. */
@@ -101,7 +101,7 @@ export class Credentials {
     const token = this.token();
     if (token === null) return null;
     return createHmac("sha256", token)
-      .update(`workstreams-cookie-v2\0${this.passwordHash() ?? ""}`)
+      .update(`spectraweaver-cookie-v2\0${this.passwordHash() ?? ""}`)
       .digest("base64url");
   }
 

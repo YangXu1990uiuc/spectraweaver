@@ -1,6 +1,6 @@
 # Security
 
-workstreams puts a shell in a web page: **anyone who can sign in gets a shell on your server, as you.** Treat access to it the way you treat SSH access.
+SpectraWeaver puts a shell in a web page: **anyone who can sign in gets a shell on your server, as you.** Treat access to it the way you treat SSH access.
 
 ## Deploying it safely
 
@@ -11,7 +11,7 @@ workstreams puts a shell in a web page: **anyone who can sign in gets a shell on
   - Don't bind it to a public interface.
   - Don't publish it through a reverse proxy without an additional authentication layer in front.
 - **Beyond localhost, it speaks plain HTTP.** Binding another address (`--host`) requires `--allow-remote`, because passwords, tokens and terminal contents would then cross the network unencrypted. If you must, put it behind HTTPS on a trusted network: Tailscale Serve, or a reverse proxy with TLS and its own authentication. Pass `--allow-host <name>` for the name browsers use.
-- **Use a strong password.** Sign-in is required even on localhost, because other users on the same machine can reach 127.0.0.1. Password guessing is throttled, but a strong password is still your main protection. If a login link or token may have leaked, run `workstreams token --rotate`: it invalidates the token and every browser login.
+- **Use a strong password.** Sign-in is required even on localhost, because other users on the same machine can reach 127.0.0.1. Password guessing is throttled, but a strong password is still your main protection. If a login link or token may have leaked, run `spectraweaver token --rotate`: it invalidates the token and every browser login.
 
 ## What it protects against
 
@@ -38,4 +38,4 @@ It does **not** protect against:
 
 ## Reporting a vulnerability
 
-Please report vulnerabilities privately through GitHub: the repository's **Security** tab → **Report a vulnerability**. Don't open a public issue. Include the version (`workstreams version`), what an attacker needs, and the steps to reproduce. You will get an acknowledgement within a week.
+Please report vulnerabilities privately through GitHub: the repository's **Security** tab → **Report a vulnerability**. Don't open a public issue. Include the version (`spectraweaver version`), what an attacker needs, and the steps to reproduce. You will get an acknowledgement within a week.

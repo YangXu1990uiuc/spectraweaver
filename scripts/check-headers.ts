@@ -1,15 +1,15 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 // Fails if a source file lacks the license header (DESIGN.md §10).
 
 import { Glob } from "bun";
 
 const REQUIRED = [
-  /Copyright \d{4} The workstreams Authors/,
+  /Copyright \d{4} The SpectraWeaver Authors/,
   /SPDX-License-Identifier: Apache-2\.0/,
-  /Part of workstreams: https:\/\/github\.com\/YangXu1990uiuc\/workstreams/,
+  /Part of SpectraWeaver: https:\/\/github\.com\/YangXu1990uiuc\/spectraweaver/,
 ];
 
 const missing: string[] = [];

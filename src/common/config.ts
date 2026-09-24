@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, renameSync } from "node:fs";
@@ -65,20 +65,31 @@ export function saveInstance(paths: Paths, instance: Instance): void {
 }
 
 /**
- * Earlier versions kept state directly in the base directory, which breaks when several
- * hosts share it (an NFS home). Moves this host's tabs and instance settings into its own
- * directory. Returns the names of the files it moved.
+ * Brings older directories forward (see resolvePaths). The former name's config directory
+ * is copied, not moved: other hosts sharing it over NFS may still run the old version, and
+ * would lose their token. This host's tabs and instance settings (port, login cookie name)
+ * move out of the directories earlier versions used for state: the flat layout, which broke
+ * when hosts shared it, and the former name's. Returns a line for each change.
  */
-export function migrateFlatState(paths: Paths): string[] {
-  if (paths.stateDir === paths.stateBase) return []; // still on the flat layout
-  const moved: string[] = [];
-  for (const name of ["meta.json", "instance.json"]) {
-    const from = join(paths.stateBase, name);
-    const to = join(paths.stateDir, name);
-    if (!existsSync(from) || existsSync(to)) continue;
-    ensurePrivateDir(paths.stateDir);
-    renameSync(from, to);
-    moved.push(name);
+export function migrateOlderState(paths: Paths): string[] {
+  const changes: string[] = [];
+  if (paths.pendingConfigDir) {
+    ensurePrivateDir(paths.pendingConfigDir);
+    for (const name of ["auth.token", "password", "config.json"]) {
+      const from = join(paths.configDir, name);
+      if (existsSync(from)) writeFileAtomic(join(paths.pendingConfigDir, name), readFileSync(from, "utf8"));
+    }
+    changes.push(`copied  ${paths.configDir} to ${paths.pendingConfigDir}`);
   }
-  return moved;
+  for (const dir of paths.olderStateDirs) {
+    for (const name of ["meta.json", "instance.json"]) {
+      const from = join(dir, name);
+      const to = join(paths.stateDir, name);
+      if (!existsSync(from) || existsSync(to)) continue;
+      ensurePrivateDir(paths.stateDir);
+      renameSync(from, to);
+      changes.push(`moved   ${name} from ${dir} into ${paths.stateDir}`);
+    }
+  }
+  return changes;
 }

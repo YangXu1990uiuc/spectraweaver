@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import type { Socket } from "bun";
 import {
@@ -117,7 +117,7 @@ export class DaemonClient {
     }
     this.socket = socket;
     this.writer = new QueuedWriter(socket, MAX_BACKLOG, () => socket.end());
-    this.request({ op: "hello", protocol: PROTOCOL_VERSION, client: "workstreams-server" }, (response) => {
+    this.request({ op: "hello", protocol: PROTOCOL_VERSION, client: "spectraweaver-server" }, (response) => {
       const hello = response.ok ? (response.result as HelloResult) : null;
       if (!hello || hello.protocol !== PROTOCOL_VERSION) {
         this.log(`daemon speaks protocol ${hello?.protocol ?? "?"}, expected ${PROTOCOL_VERSION}`);

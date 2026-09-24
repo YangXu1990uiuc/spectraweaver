@@ -1,12 +1,12 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrateFlatState } from "../src/common/config.ts";
+import { migrateOlderState } from "../src/common/config.ts";
 import { networkFilesystem } from "../src/common/files.ts";
 import { hostKey, resolvePaths } from "../src/common/paths.ts";
 
@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 function scratch(): string {
-  const dir = mkdtempSync(join(tmpdir().length > 40 ? "/tmp" : tmpdir(), "ws-paths-"));
+  const dir = mkdtempSync(join(tmpdir().length > 40 ? "/tmp" : tmpdir(), "sw-paths-"));
   dirs.push(dir);
   return dir;
 }
@@ -34,11 +34,11 @@ test("host directory names are short, readable and distinct", () => {
 test("state goes in a per-host directory, so hosts sharing an NFS home don't collide", () => {
   const base = scratch();
   const paths = resolvePaths({ XDG_CONFIG_HOME: join(base, "cfg"), XDG_STATE_HOME: join(base, "st") });
-  expect(paths.stateBase).toBe(join(base, "st", "workstreams"));
-  expect(paths.stateDir).toBe(join(base, "st", "workstreams", hostKey()));
+  expect(paths.stateBase).toBe(join(base, "st", "spectraweaver"));
+  expect(paths.stateDir).toBe(join(base, "st", "spectraweaver", hostKey()));
   expect(paths.daemonSocket).toBe(join(paths.stateDir, "daemon.sock"));
   expect(paths.stateSource).toBe("default");
-  expect(paths.configDir).toBe(join(base, "cfg", "workstreams"));
+  expect(paths.configDir).toBe(join(base, "cfg", "spectraweaver"));
 });
 
 test("`config state-dir` (stateDir in config.json) moves state out of a small home", () => {
@@ -46,7 +46,7 @@ test("`config state-dir` (stateDir in config.json) moves state out of a small ho
   const configDir = join(base, "cfg");
   mkdirSync(configDir, { recursive: true });
   writeFileSync(join(configDir, "config.json"), JSON.stringify({ stateDir: join(base, "big-disk") }));
-  const paths = resolvePaths({ WORKSTREAMS_CONFIG_DIR: configDir });
+  const paths = resolvePaths({ SPECTRAWEAVER_CONFIG_DIR: configDir });
   expect(paths.stateDir).toBe(join(base, "big-disk", hostKey()));
   expect(paths.stateSource).toContain("config.json");
 });
@@ -57,13 +57,13 @@ test("environment variables take precedence, in order", () => {
   mkdirSync(configDir, { recursive: true });
   writeFileSync(join(configDir, "config.json"), JSON.stringify({ stateDir: join(base, "setting") }));
 
-  const home = resolvePaths({ WORKSTREAMS_HOME: join(base, "wh") });
+  const home = resolvePaths({ SPECTRAWEAVER_HOME: join(base, "wh") });
   expect(home.configDir).toBe(join(base, "wh", "config"));
   expect(home.stateDir).toBe(join(base, "wh", "state", hostKey()));
 
-  const explicit = resolvePaths({ WORKSTREAMS_CONFIG_DIR: configDir, WORKSTREAMS_STATE_DIR: join(base, "env") });
+  const explicit = resolvePaths({ SPECTRAWEAVER_CONFIG_DIR: configDir, SPECTRAWEAVER_STATE_DIR: join(base, "env") });
   expect(explicit.stateDir).toBe(join(base, "env", hostKey()));
-  expect(explicit.stateSource).toBe("$WORKSTREAMS_STATE_DIR");
+  expect(explicit.stateSource).toBe("$SPECTRAWEAVER_STATE_DIR");
 });
 
 test("a daemon from the old flat layout keeps its directory until it exits", () => {
@@ -71,21 +71,65 @@ test("a daemon from the old flat layout keeps its directory until it exits", () 
   const stateBase = join(base, "st");
   mkdirSync(stateBase, { recursive: true });
   writeFileSync(join(stateBase, "daemon.pid"), `${process.pid}\n`); // alive: this process
-  const env = { WORKSTREAMS_CONFIG_DIR: join(base, "cfg"), WORKSTREAMS_STATE_DIR: stateBase };
+  const env = { SPECTRAWEAVER_CONFIG_DIR: join(base, "cfg"), SPECTRAWEAVER_STATE_DIR: stateBase };
   expect(resolvePaths(env).stateDir).toBe(stateBase);
 
   writeFileSync(join(stateBase, "daemon.pid"), "999999999\n"); // no such process
   writeFileSync(join(stateBase, "meta.json"), "{}");
   const paths = resolvePaths(env);
   expect(paths.stateDir).toBe(join(stateBase, hostKey()));
-  expect(migrateFlatState(paths)).toEqual(["meta.json"]);
+  expect(migrateOlderState(paths)).toEqual([`moved   meta.json from ${stateBase} into ${paths.stateDir}`]);
   expect(existsSync(join(paths.stateDir, "meta.json"))).toBe(true);
   expect(existsSync(join(stateBase, "meta.json"))).toBe(false);
 });
 
+test("the former name's directories stay in use while its daemon runs, then move over", () => {
+  const base = scratch();
+  const env = { XDG_CONFIG_HOME: join(base, "cfg"), XDG_STATE_HOME: join(base, "st") };
+  const formerConfig = join(base, "cfg", "workstreams");
+  const formerState = join(base, "st", "workstreams"); // the flat layout
+  mkdirSync(formerConfig, { recursive: true });
+  mkdirSync(formerState, { recursive: true });
+  writeFileSync(join(formerConfig, "auth.token"), "t".repeat(32));
+  writeFileSync(join(formerState, "meta.json"), "{}");
+  writeFileSync(join(formerState, "daemon.pid"), `${process.pid}\n`); // alive: this process
+
+  let paths = resolvePaths(env);
+  expect(paths.configDir).toBe(formerConfig);
+  expect(paths.stateDir).toBe(formerState);
+  // While the old daemon runs, only the config directory is copied, and the original stays
+  // for other hosts that share it.
+  expect(migrateOlderState(paths)).toEqual([`copied  ${formerConfig} to ${join(base, "cfg", "spectraweaver")}`]);
+  paths = resolvePaths(env);
+  expect(paths.configDir).toBe(join(base, "cfg", "spectraweaver"));
+  expect(readFileSync(paths.tokenFile, "utf8")).toBe("t".repeat(32));
+  expect(existsSync(join(formerConfig, "auth.token"))).toBe(true);
+  expect(paths.stateDir).toBe(formerState);
+
+  writeFileSync(join(formerState, "daemon.pid"), "999999999\n"); // it has exited
+  paths = resolvePaths(env);
+  expect(paths.stateDir).toBe(join(base, "st", "spectraweaver", hostKey()));
+  expect(migrateOlderState(paths)).toEqual([`moved   meta.json from ${formerState} into ${paths.stateDir}`]);
+  expect(existsSync(join(paths.stateDir, "meta.json"))).toBe(true);
+});
+
+test("a per-host state directory under the former name is found too", () => {
+  const base = scratch();
+  const env = { XDG_CONFIG_HOME: join(base, "cfg"), XDG_STATE_HOME: join(base, "st") };
+  const formerHostDir = join(base, "st", "workstreams", hostKey());
+  mkdirSync(formerHostDir, { recursive: true });
+  writeFileSync(join(formerHostDir, "instance.json"), "{}");
+  writeFileSync(join(formerHostDir, "daemon.pid"), `${process.pid}\n`);
+  expect(resolvePaths(env).stateDir).toBe(formerHostDir);
+
+  writeFileSync(join(formerHostDir, "daemon.pid"), "999999999\n");
+  const paths = resolvePaths(env);
+  expect(migrateOlderState(paths)).toEqual([`moved   instance.json from ${formerHostDir} into ${paths.stateDir}`]);
+});
+
 test("a state path too long for a Unix socket is refused with advice", () => {
   const long = `/tmp/${"x".repeat(120)}`;
-  expect(() => resolvePaths({ WORKSTREAMS_CONFIG_DIR: "/tmp/cfg", WORKSTREAMS_STATE_DIR: long })).toThrow(
+  expect(() => resolvePaths({ SPECTRAWEAVER_CONFIG_DIR: "/tmp/cfg", SPECTRAWEAVER_STATE_DIR: long })).toThrow(
     /too long for a Unix socket/,
   );
 });

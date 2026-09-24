@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import type { ServerWebSocket } from "bun";
 import { randomBytes } from "node:crypto";
@@ -356,7 +356,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     development: options.development ?? false,
     routes: {
       "/": indexPage,
-      // `uid` lets `workstreams up` tell its own server from another user's on the same port.
+      // `uid` lets `spectraweaver up` tell its own server from another user's on the same port.
       "/api/health": () => Response.json({ ok: true, version: VERSION, uid: process.getuid?.() ?? null }),
       "/api/login-info": () =>
         Response.json({ ...owner, passwordSet: credentials.passwordHash() !== null }),

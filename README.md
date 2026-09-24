@@ -1,11 +1,11 @@
-# workstreams
+# SpectraWeaver
 
 Persistent terminals in the browser, for running many CLI coding agents on a dev server.
 
 > Status: early prototype. Expect rough edges. The plan is in [DESIGN.md](DESIGN.md).
 
 > [!WARNING]
-> workstreams puts a shell in a web page: anyone who can sign in gets a shell on your server. It listens on 127.0.0.1 only. Reach it through an SSH tunnel or a VPN, and **never expose it to the internet**. See [SECURITY.md](SECURITY.md).
+> SpectraWeaver puts a shell in a web page: anyone who can sign in gets a shell on your server. It listens on 127.0.0.1 only. Reach it through an SSH tunnel or a VPN, and **never expose it to the internet**. See [SECURITY.md](SECURITY.md).
 
 - **Sessions outlive everything but the machine.** Close the tab, lose the network, restart the web server: programs keep running on the server.
 - **Same state everywhere.** Every browser, window and device sees the same terminals, tabs and banners.
@@ -18,8 +18,8 @@ Persistent terminals in the browser, for running many CLI coding agents on a dev
 Requires [Bun](https://bun.sh) 1.3.5 or later, on Linux or macOS.
 
 ```sh
-git clone https://github.com/YangXu1990uiuc/workstreams
-cd workstreams
+git clone https://github.com/YangXu1990uiuc/spectraweaver
+cd spectraweaver
 bun install
 bun run dev up
 ```
@@ -55,28 +55,28 @@ VS Code Remote's port forwarding works too. Browsers treat `localhost` as a secu
 
 Every user runs their own instance. The first `up` picks the first free port from 7777 and remembers it, so your bookmark keeps working; use `--port N` to choose one. Sign-in is required even on localhost, because other users on the machine can reach 127.0.0.1.
 
-Only a few kilobytes live in your home directory (`~/.config/workstreams`: the token, the password hash and settings), shared by all your hosts, so one password works everywhere. Everything else is per host, in `~/.local/state/workstreams/<hostname>/`, so several servers sharing an NFS home never step on each other. If your home directory is small, or you'd rather keep state off NFS, move it:
+Only a few kilobytes live in your home directory (`~/.config/spectraweaver`: the token, the password hash and settings), shared by all your hosts, so one password works everywhere. Everything else is per host, in `~/.local/state/spectraweaver/<hostname>/`, so several servers sharing an NFS home never step on each other. If your home directory is small, or you'd rather keep state off NFS, move it:
 
 ```sh
-workstreams down --all                                # moving state requires a stop
-workstreams config state-dir /local/$USER/workstreams # any local or bigger disk
-workstreams up
+spectraweaver down --all                                # moving state requires a stop
+spectraweaver config state-dir /local/$USER/spectraweaver # any local or bigger disk
+spectraweaver up
 ```
 
-workstreams uses no file locks and no SQLite, the usual sources of NFS trouble. It writes every file atomically (write, then rename) and warns when the state directory is on a network filesystem. `WORKSTREAMS_HOME=/path` relocates config and state together, if you prefer an environment variable.
+SpectraWeaver uses no file locks and no SQLite, the usual sources of NFS trouble. It writes every file atomically (write, then rename) and warns when the state directory is on a network filesystem. `SPECTRAWEAVER_HOME=/path` relocates config and state together, if you prefer an environment variable.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `workstreams up [--port N] [--allow-host NAME]` | Start the daemon and the server in the background. (`--host ADDR --allow-remote` listens beyond localhost; read [SECURITY.md](SECURITY.md) first.) |
-| `workstreams down [--all]` | Stop the server. `--all` also stops the daemon, which ends every session. |
-| `workstreams status` | Show what is running. |
-| `workstreams passwd [--clear]` | Set (or remove) the password for signing in from the browser. |
-| `workstreams token [--rotate]` | Print the login token and link; `--rotate` replaces the token and signs out every browser. |
-| `workstreams new [--size 120x36] [--cwd DIR] [-- COMMAND]` | Create a session from the command line. |
-| `workstreams ls` | List sessions. |
-| `workstreams config [state-dir PATH \| --reset]` | Show where config and state live, or move this host's state. |
+| `spectraweaver up [--port N] [--allow-host NAME]` | Start the daemon and the server in the background. (`--host ADDR --allow-remote` listens beyond localhost; read [SECURITY.md](SECURITY.md) first.) |
+| `spectraweaver down [--all]` | Stop the server. `--all` also stops the daemon, which ends every session. |
+| `spectraweaver status` | Show what is running. |
+| `spectraweaver passwd [--clear]` | Set (or remove) the password for signing in from the browser. |
+| `spectraweaver token [--rotate]` | Print the login token and link; `--rotate` replaces the token and signs out every browser. |
+| `spectraweaver new [--size 120x36] [--cwd DIR] [-- COMMAND]` | Create a session from the command line. |
+| `spectraweaver ls` | List sessions. |
+| `spectraweaver config [state-dir PATH \| --reset]` | Show where config and state live, or move this host's state. |
 
 When running from source, use `bun run dev <command>`.
 
@@ -94,7 +94,7 @@ A small daemon owns the terminals (PTYs) and keeps a headless copy of each scree
 bun test                 # unit and integration tests
 bun run typecheck
 bun run check-headers    # every source file needs the license header
-WORKSTREAMS_DEV=1 bun run dev server --port 7788   # server in the foreground
+SPECTRAWEAVER_DEV=1 bun run dev server --port 7788   # server in the foreground
 ```
 
 ## License

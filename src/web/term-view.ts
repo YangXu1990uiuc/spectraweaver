@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { ClipboardAddon, type IClipboardProvider } from "@xterm/addon-clipboard";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -8,6 +8,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import { type ClientMessage, type SessionView, type Snapshot, THEME } from "../common/protocol.ts";
+import { loadSetting, saveSetting } from "./dom.ts";
 import { installKeymap, type Platform } from "./keymap.ts";
 import { suppressQueryReplies } from "./queries.ts";
 
@@ -261,18 +262,10 @@ function clampFont(size: number): number {
 }
 
 function loadZoom(sessionId: string): number {
-  try {
-    const value = Number(localStorage.getItem(`workstreams.zoom.${sessionId}`));
-    return Number.isInteger(value) && value >= 0 && value < ZOOM_STEPS.length ? value : 0;
-  } catch {
-    return 0;
-  }
+  const value = Number(loadSetting(`zoom.${sessionId}`, "0"));
+  return Number.isInteger(value) && value >= 0 && value < ZOOM_STEPS.length ? value : 0;
 }
 
 function saveZoom(sessionId: string, index: number): void {
-  try {
-    localStorage.setItem(`workstreams.zoom.${sessionId}`, String(index));
-  } catch {
-    // Storage unavailable (private mode); zoom just won't persist.
-  }
+  saveSetting(`zoom.${sessionId}`, String(index));
 }

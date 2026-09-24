@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import type { Socket } from "bun";
 import { randomBytes } from "node:crypto";
@@ -279,7 +279,7 @@ function listenUnix(
       : "";
     throw new Error(
       `cannot create the daemon socket ${socketPath}: ${(error as Error).message}\n${hint}` +
-        "Put the state directory on a local disk: `workstreams config state-dir /local/path`.",
+        "Put the state directory on a local disk: `spectraweaver config state-dir /local/path`.",
     );
   }
 }

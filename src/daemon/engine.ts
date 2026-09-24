@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
@@ -136,7 +136,7 @@ export class Engine {
     // XTVERSION
     parser.registerCsiHandler({ prefix: ">", final: "q" }, (params) => {
       if ((params[0] ?? 0) !== 0) return false;
-      reply(`\x1bP>|workstreams(${VERSION})\x1b\\`);
+      reply(`\x1bP>|spectraweaver(${VERSION})\x1b\\`);
       return true;
     });
   }

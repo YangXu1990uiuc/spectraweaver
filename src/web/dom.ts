@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -13,10 +13,28 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+const STORAGE_PREFIX = "spectraweaver.";
+const FORMER_STORAGE_PREFIX = "workstreams.";
+
+/** Moves preferences saved under the project's former name (text size, zoom, folder) over. */
+export function adoptFormerSettings(): void {
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (!key.startsWith(FORMER_STORAGE_PREFIX)) continue;
+      const renamed = STORAGE_PREFIX + key.slice(FORMER_STORAGE_PREFIX.length);
+      const value = localStorage.getItem(key);
+      if (value !== null && localStorage.getItem(renamed) === null) localStorage.setItem(renamed, value);
+      localStorage.removeItem(key);
+    }
+  } catch {
+    // Storage unavailable (private mode); there is nothing to move.
+  }
+}
+
 /** Per-browser preferences. Storage can be unavailable (private mode); callers get the fallback. */
 export function loadSetting(key: string, fallback: string): string {
   try {
-    return localStorage.getItem(`workstreams.${key}`) ?? fallback;
+    return localStorage.getItem(`${STORAGE_PREFIX}${key}`) ?? fallback;
   } catch {
     return fallback;
   }
@@ -24,7 +42,7 @@ export function loadSetting(key: string, fallback: string): string {
 
 export function saveSetting(key: string, value: string): void {
   try {
-    localStorage.setItem(`workstreams.${key}`, value);
+    localStorage.setItem(`${STORAGE_PREFIX}${key}`, value);
   } catch {
     // Storage unavailable; the setting just won't persist.
   }

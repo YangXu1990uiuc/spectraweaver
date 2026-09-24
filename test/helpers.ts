@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,10 +13,10 @@ export const TEST_SHELL = ["bash", "--norc", "--noprofile"];
 export function tempPaths(): { paths: Paths; cleanup(): void } {
   // Unix socket paths are limited to about 100 bytes, so keep the base directory short.
   const root = tmpdir().length > 40 ? "/tmp" : tmpdir();
-  const base = mkdtempSync(join(root, "ws-test-"));
+  const base = mkdtempSync(join(root, "sw-test-"));
   const paths = resolvePaths({
-    WORKSTREAMS_CONFIG_DIR: join(base, "config"),
-    WORKSTREAMS_STATE_DIR: join(base, "state"),
+    SPECTRAWEAVER_CONFIG_DIR: join(base, "config"),
+    SPECTRAWEAVER_STATE_DIR: join(base, "state"),
   });
   return { paths, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }

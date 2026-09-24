@@ -1,13 +1,13 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { TAB_COLORS, type TabView } from "../common/protocol.ts";
 import { el } from "./dom.ts";
 
 /** Drag type for moving a session's tile onto a tab. */
-export const SESSION_DRAG_TYPE = "application/x-workstreams-session";
-const TAB_DRAG_TYPE = "application/x-workstreams-tab";
+export const SESSION_DRAG_TYPE = "application/x-spectraweaver-session";
+const TAB_DRAG_TYPE = "application/x-spectraweaver-tab";
 
 export interface TabStripHandlers {
   select(id: string): void;

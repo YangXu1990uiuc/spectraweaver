@@ -1,6 +1,6 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import "@xterm/xterm/css/xterm.css";
 import {
@@ -12,7 +12,7 @@ import {
   TAB_COLORS,
   type TabView,
 } from "../common/protocol.ts";
-import { el, formatGrid, type Grid, loadSetting, parseGrid, randomId, saveSetting } from "./dom.ts";
+import { adoptFormerSettings, el, formatGrid, type Grid, loadSetting, parseGrid, randomId, saveSetting } from "./dom.ts";
 import { detectPlatform } from "./keymap.ts";
 import { createSettingsDialog, ensureLogin } from "./login.ts";
 import { createNewTerminalDialog } from "./new-dialog.ts";
@@ -24,9 +24,11 @@ import { FONT_FAMILY, TermView } from "./term-view.ts";
 // clicks or keystrokes into it (clickjacking). SameSite=Strict cookies already keep a framed
 // copy signed out.
 if (window.top !== window.self) {
-  document.body.textContent = "workstreams cannot be shown inside another page.";
-  throw new Error("workstreams refuses to run in a frame");
+  document.body.textContent = "SpectraWeaver cannot be shown inside another page.";
+  throw new Error("SpectraWeaver refuses to run in a frame");
 }
+
+adoptFormerSettings();
 
 const platform = detectPlatform();
 // Matrix order, rows x columns: "2x3" is 2 rows of 3 tiles.
@@ -119,7 +121,7 @@ const tabStrip = new TabStrip({
 });
 
 const topbar = el("header", { class: "topbar" }, [
-  el("span", { class: "brand" }, ["workstreams"]),
+  el("span", { class: "brand" }, ["SpectraWeaver"]),
   statusDot,
   tabStrip.element,
 ]);
@@ -197,14 +199,14 @@ function setStatus(): void {
   statusDot.className = `status ${connected ? (daemonUp ? "ok" : "warn") : "down"}`;
   statusDot.title = connected ? (daemonUp ? "Connected" : "Daemon not running") : "Reconnecting…";
   if (!connected) notice.textContent = "Connection to the server lost. Reconnecting…";
-  else if (!daemonUp) notice.textContent = "The daemon is not running. Start it with `workstreams up`.";
+  else if (!daemonUp) notice.textContent = "The daemon is not running. Start it with `spectraweaver up`.";
   notice.hidden = connected && daemonUp;
 }
 
 /** Browser-tab title and icon show the workspace, so several open windows are easy to tell apart. */
 function updateWindowIdentity(tab: TabView | null): void {
   const waiting = belled.size;
-  document.title = `${waiting > 0 ? `(${waiting}) ` : ""}${tab ? `${tab.name} · ` : ""}workstreams`;
+  document.title = `${waiting > 0 ? `(${waiting}) ` : ""}${tab ? `${tab.name} · ` : ""}SpectraWeaver`;
   const color = tab?.color ?? "#3794ff";
   const dot = waiting > 0 ? '<circle cx="12" cy="4" r="3.5" fill="#cca700" stroke="#1f1f1f" stroke-width="1"/>' : "";
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="12" rx="3" fill="${color}"/><path d="M4 6l2.5 2L4 10M8 10h4" stroke="#1f1f1f" stroke-width="1.5" fill="none"/>${dot}</svg>`;

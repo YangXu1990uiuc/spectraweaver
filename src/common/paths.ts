@@ -1,11 +1,15 @@
-// Copyright 2026 The workstreams Authors
+// Copyright 2026 The SpectraWeaver Authors
 // SPDX-License-Identifier: Apache-2.0
-// Part of workstreams: https://github.com/YangXu1990uiuc/workstreams
+// Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
+
+const NAME = "spectraweaver";
+/** The project's former name. Its default directories are still found; see resolvePaths. */
+const FORMER_NAME = "workstreams";
 
 export interface Paths {
   /** Settings shared by all of the user's machines: token, password hash, where state lives. */
@@ -13,12 +17,16 @@ export interface Paths {
   configFile: string;
   tokenFile: string;
   passwordFile: string;
+  /** Set while configDir is the former name's: where `up` copies it (see migrateOlderState). */
+  pendingConfigDir?: string;
   /** Holds one state directory per host, because home directories are often shared over NFS. */
   stateBase: string;
-  /** How stateBase was chosen, for `workstreams config`. */
+  /** How stateBase was chosen, for `spectraweaver config`. */
   stateSource: string;
   /** This host's state: socket, pid files, logs, tabs. */
   stateDir: string;
+  /** Where earlier versions kept this host's state, now that no daemon runs there. */
+  olderStateDirs: string[];
   daemonSocket: string;
   instanceFile: string;
   metaFile: string;
@@ -52,45 +60,70 @@ export function expandHome(path: string): string {
 /**
  * Where everything lives. The config directory is tiny and fine in a small home directory;
  * state can go anywhere. In order of precedence, the state base directory is:
- *   $WORKSTREAMS_STATE_DIR, $WORKSTREAMS_HOME/state, `stateDir` in config.json
- *   (set with `workstreams config state-dir`), then $XDG_STATE_HOME/workstreams.
- * The config directory is $WORKSTREAMS_CONFIG_DIR, $WORKSTREAMS_HOME/config, then
- * $XDG_CONFIG_HOME/workstreams.
+ *   $SPECTRAWEAVER_STATE_DIR, $SPECTRAWEAVER_HOME/state, `stateDir` in config.json
+ *   (set with `spectraweaver config state-dir`), then $XDG_STATE_HOME/spectraweaver.
+ * The config directory is $SPECTRAWEAVER_CONFIG_DIR, $SPECTRAWEAVER_HOME/config, then
+ * $XDG_CONFIG_HOME/spectraweaver.
+ *
+ * Directories from earlier versions stay in use while they are needed: the former name's
+ * config directory until `up` copies it, and an older state directory while a daemon started
+ * there runs, so upgrading only the server keeps every session. This function only reads.
  *
  * State is not kept in $XDG_RUNTIME_DIR: without linger it is deleted when the user's last
  * login session ends, taking the socket with it.
  */
 export function resolvePaths(env: Record<string, string | undefined> = process.env): Paths {
   const home = homedir();
-  const workstreamsHome = env.WORKSTREAMS_HOME ? resolve(expandHome(env.WORKSTREAMS_HOME)) : undefined;
-  const configDir =
-    env.WORKSTREAMS_CONFIG_DIR ??
-    (workstreamsHome ? join(workstreamsHome, "config") : join(env.XDG_CONFIG_HOME || join(home, ".config"), "workstreams"));
+  const appHome = env.SPECTRAWEAVER_HOME ? resolve(expandHome(env.SPECTRAWEAVER_HOME)) : undefined;
+  const xdgConfig = env.XDG_CONFIG_HOME || join(home, ".config");
+  const xdgState = env.XDG_STATE_HOME || join(home, ".local", "state");
+
+  let configDir = env.SPECTRAWEAVER_CONFIG_DIR ?? (appHome ? join(appHome, "config") : join(xdgConfig, NAME));
+  let pendingConfigDir: string | undefined;
+  const formerConfigDir = join(xdgConfig, FORMER_NAME);
+  if (!env.SPECTRAWEAVER_CONFIG_DIR && !appHome && !existsSync(configDir) && existsSync(formerConfigDir)) {
+    pendingConfigDir = configDir;
+    configDir = formerConfigDir;
+  }
   const configFile = join(configDir, "config.json");
 
   let stateBase: string;
   let stateSource: string;
   const configured = readStateDirSetting(configFile);
-  if (env.WORKSTREAMS_STATE_DIR) {
-    stateBase = resolve(expandHome(env.WORKSTREAMS_STATE_DIR));
-    stateSource = "$WORKSTREAMS_STATE_DIR";
-  } else if (workstreamsHome) {
-    stateBase = join(workstreamsHome, "state");
-    stateSource = "$WORKSTREAMS_HOME";
+  if (env.SPECTRAWEAVER_STATE_DIR) {
+    stateBase = resolve(expandHome(env.SPECTRAWEAVER_STATE_DIR));
+    stateSource = "$SPECTRAWEAVER_STATE_DIR";
+  } else if (appHome) {
+    stateBase = join(appHome, "state");
+    stateSource = "$SPECTRAWEAVER_HOME";
   } else if (configured) {
     stateBase = configured;
     stateSource = `stateDir in ${configFile}`;
   } else {
-    stateBase = join(env.XDG_STATE_HOME || join(home, ".local", "state"), "workstreams");
+    stateBase = join(xdgState, NAME);
     stateSource = "default";
   }
 
-  const stateDir = stateDirIn(stateBase);
+  // Earlier versions kept state directly in the base directory, and before that under the
+  // former name. While a daemon started in one of those runs, keep using its directory.
+  const older = [{ base: stateBase, dir: stateBase }];
+  if (stateSource === "default") {
+    const formerBase = join(xdgState, FORMER_NAME);
+    older.push({ base: formerBase, dir: join(formerBase, hostKey()) }, { base: formerBase, dir: formerBase });
+  }
+  let stateDir = join(stateBase, hostKey());
+  const running = existsSync(stateDir) ? undefined : older.find(({ dir }) => daemonAlive(dir));
+  if (running) {
+    if (running.base !== stateBase) stateSource = `${FORMER_NAME} (the former name), while its daemon runs`;
+    stateBase = running.base;
+    stateDir = running.dir;
+  }
+  const olderStateDirs = running ? [] : older.map(({ dir }) => dir).filter((dir) => existsSync(dir));
   const daemonSocket = join(stateDir, "daemon.sock");
   if (daemonSocket.length > MAX_SOCKET_PATH) {
     throw new Error(
       `the state directory's path is too long for a Unix socket (${daemonSocket.length} bytes, ` +
-        `limit ${MAX_SOCKET_PATH}): ${stateDir}\nChoose a shorter one with \`workstreams config state-dir PATH\`.`,
+        `limit ${MAX_SOCKET_PATH}): ${stateDir}\nChoose a shorter one with \`spectraweaver config state-dir PATH\`.`,
     );
   }
   return {
@@ -98,9 +131,11 @@ export function resolvePaths(env: Record<string, string | undefined> = process.e
     configFile,
     tokenFile: join(configDir, "auth.token"),
     passwordFile: join(configDir, "password"),
+    pendingConfigDir,
     stateBase,
     stateSource,
     stateDir,
+    olderStateDirs,
     daemonSocket,
     instanceFile: join(stateDir, "instance.json"),
     metaFile: join(stateDir, "meta.json"),
@@ -116,18 +151,10 @@ export function ensurePrivateDir(dir: string): void {
   chmodSync(dir, 0o700);
 }
 
-/** This host's directory under the base, unless a daemon from the older flat layout still runs. */
-function stateDirIn(base: string): string {
-  const hostDir = join(base, hostKey());
-  // Earlier versions kept state directly in the base directory. While a daemon started by
-  // such a version is alive, keep using its directory, so upgrading only the server works.
-  if (!existsSync(hostDir) && flatLayoutDaemonAlive(base)) return base;
-  return hostDir;
-}
-
-function flatLayoutDaemonAlive(base: string): boolean {
+/** Whether a daemon that keeps its state in this directory is still running. */
+function daemonAlive(dir: string): boolean {
   try {
-    const pid = Number(readFileSync(join(base, "daemon.pid"), "utf8").trim());
+    const pid = Number(readFileSync(join(dir, "daemon.pid"), "utf8").trim());
     if (!Number.isInteger(pid) || pid <= 0) return false;
     process.kill(pid, 0);
     return true;

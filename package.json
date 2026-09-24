@@ -1,13 +1,13 @@
 {
-  "name": "workstreams",
+  "name": "spectraweaver",
   "version": "0.0.1",
   "description": "Persistent browser terminals for running many CLI agents on a dev server",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
-  "repository": "github:YangXu1990uiuc/workstreams",
+  "repository": "github:YangXu1990uiuc/spectraweaver",
   "bin": {
-    "workstreams": "src/cli.ts"
+    "spectraweaver": "src/cli.ts"
   },
   "scripts": {
     "dev": "bun run src/cli.ts",
