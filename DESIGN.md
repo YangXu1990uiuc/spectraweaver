@@ -41,7 +41,7 @@ It is built for running many CLI coding agents in parallel (Claude Code, Codex C
 
 1. **Start it.** On the server, `spectraweaver up` starts the daemon and the server and prints a login link. After setting a password (`spectraweaver passwd`, or in Settings), a bookmark of the plain URL is enough.
 2. **Open it.** Open the link through an SSH tunnel or HTTPS, preferably as an app window (§6.3).
-3. **Create sessions.** Make a tab per workstream, such as "agents" and "infra", each with its own grid and URL. Click "New terminal": the size is pre-filled to fit the tab's grid; add a working directory and an optional startup command. A tile appears; give it a banner: "auth refactor".
+3. **Create sessions.** Make a tab per workstream, such as "agents" and "infra", each with its own layout (a grid of tiles, or windows) and URL. Click "New terminal": the size is pre-filled to fit the tab's grid; add a working directory and an optional startup command. A tile appears; give it a banner: "auth refactor".
 4. **Switch devices.** Run `claude` in a few tiles, close the laptop, and open the page on the desktop. Everything is where it was. One tile shows **needs input**; click it and answer.
 5. **Survive a reboot.** After a server reboot, dead sessions show their last screen with a **Revive** button, which runs `claude --resume <id>` in the same directory.
 
@@ -171,9 +171,11 @@ A session's size (cols × rows) is chosen when the session is created and change
 Nothing a viewer does sends a resize to the PTY:
 - attaching or focusing;
 - resizing the browser window;
-- changing the grid or dragging tiles;
+- changing the layout, or moving a window;
 - zooming;
 - opening the page on a phone.
+
+Dragging a window's edge is the explicit resize of §4.3, not a viewing action: it is how a terminal is asked for a new size when the tab is laid out as windows.
 
 ### 4.2 Why
 
@@ -198,9 +200,10 @@ Nothing a viewer does sends a resize to the PTY:
   - Cells are modelled the way xterm.js's WebGL renderer draws them: glyph advance and line height scale with the font size, then snap to whole device pixels (width down, height up). Ignoring the snapping overestimates the width by up to a pixel per column.
   - A live hint shows the resulting text size and how much of the tile the terminal fills.
 - **Why shape matters.** A cell is about 1:2, so a terminal's aspect ratio is about `cols ÷ (2 × rows)`. On a 16:9 screen, a 2 × 4 grid (2 rows of 4) has tiles of aspect about 0.89: 100×56 fills such a tile, while 120×36 leaves about 47% of it blank.
-- **Resizing is explicit, and works like a window.** Dragging the terminal's right edge, bottom edge or corner in its tile resizes the session in whole cells at the text size shown, never beyond the tile (the tile is the terminal's screen; zoom out first for more cells at smaller text), with the new grid outlined during the drag; a double-click on the corner fills the tile, and the size in the tile's header opens a dialog for exact numbers, which carries the warning about inline TUIs.
+- **Resizing is explicit, and works like a window.** In a grid, dragging the terminal's right edge, bottom edge or corner in its tile resizes the session in whole cells at the text size shown, never beyond the tile (the tile is the terminal's screen; zoom out first for more cells at smaller text), with the new grid outlined during the drag; a double-click on the corner fills the tile. In a tab laid out as windows (§4.5), the window's own edges and corners are the handles: window and terminal resize together, the terminal area snapping to whole cells at the text size shown, so the window grows or shrinks by cells as a desktop terminal does. The size in the tile's header opens a dialog for exact numbers, which carries the warning about inline TUIs.
   - The size belongs to the session, so every browser follows. The daemon resizes the PTY (SIGWINCH) and its engine at one point of the output stream and emits `resized` there; the server then sends every viewer a fresh snapshot, taking each out of the output fan first, so no viewer parses output meant for the new grid with the old one.
   - The tile that asked keeps its text size exactly: its zoom becomes the fraction of the new fill font that reproduces the old text size (Ctrl + / − then step to the next fixed percentage from there); other viewers keep their zoom and only refit the font.
+  - A window whose terminal cannot be resized (an exited program, or a daemon from before resizing) still resizes as a window; its terminal only refits the font.
 - **Programs cannot resize either.** xterm.js `windowOptions` stay disabled (the default), so XTWINOPS resize requests are ignored.
 
 ### 4.4 Rendering a session into a tile
@@ -215,7 +218,7 @@ Nothing a viewer does sends a resize to the PTY:
 - **Controls.** These act on the focused tile, and the UI consumes the keys (they are not sent to the terminal):
   - Ctrl + `=` / `−` / `0` (Cmd on macOS);
   - Ctrl + mouse wheel.
-- **Layout changes.** Zoom is relative, so changing the grid, dragging tiles, or resizing the window keeps each tile's zoom and only recomputes its font size.
+- **Layout changes.** Zoom is relative, so changing the layout, moving a window, or resizing the browser window keeps each tile's zoom and only recomputes its font size.
 - **How to scale.** Use xterm's `fontSize`, never CSS transforms. Under transforms, xterm.js measures cells wrongly and misplaces the selection (xterm.js #2488, #3242).
 - **Extra space** is blank in the MVP.
   - A possible later feature: a read-only strip above the terminal showing the most recent scrollback lines. It is display-only; the program still sees the fixed rows.
@@ -230,7 +233,9 @@ Nothing a viewer does sends a resize to the PTY:
   - Drag a tile by its grip onto a tab to move the session; drag tabs to reorder them.
   - Deleting a tab moves its sessions to the neighbouring tab; processes are never touched. The last tab cannot be deleted.
   - A bell in any session marks its tab, so a workspace that needs attention is visible without switching to it.
-- **Grid.** Each tab's grid is written in matrix order, rows × columns: "2 × 3" is 2 rows of 3 tiles. Tiles appear in creation order; with more sessions than tiles, the grid scrolls.
+- **Layout.** Each tab lays its terminals out in one of two ways, chosen in the top bar and stored with the tab.
+  - **Windows** (the default, also for tabs from before layouts existed): every terminal is a window, moved by its header and resized by its edges and corners, as on a desktop; windows may overlap, and a press on one brings it to the front. A window's place is a *frame*: position and size as fractions of the workspace plus a stacking order, stored on the server with the session, so every browser shows the same arrangement at its own screen size (a window's terminal refits its font there, as a tile does). Switching a grid to windows makes each tile a window where it is, front to back in creation order; choosing a grid again tidies them into it. A terminal with no frame yet (new, or moved in from another tab, which drops its frame) takes the first free cell of the tab's grid, else cascades from the top-left; every browser works this out the same way, and the first move or resize stores the place. The tab's grid thus still sizes new windows, and the new-terminal recommendation follows it.
+  - **Grid:** equal tiles, written in matrix order, rows × columns: "2 × 3" is 2 rows of 3 tiles. Tiles appear in creation order; with more sessions than tiles, the grid scrolls.
 - **Focus.** One session in the largest area (`#s=<id>`): same size, bigger font.
 - **Filmstrip (later),** for small screens.
   - A main view plus a strip of thumbnail cards, on the left, right or bottom.
@@ -382,7 +387,7 @@ When a snapshot is taken, the tracker appends the sequences that re-establish th
 
 ### 6.4 Tile header (the banner)
 
-- **Title.** User-set text, stored on the server and editable in place. It can also be set from inside the session with `spectraweaver banner "…"`, so an agent can be asked to keep its own banner current.
+- **Title.** User-set text, stored on the server and editable in place (in a windows layout the header drags the window, so a click without a drag edits the banner). It can also be set from inside the session with `spectraweaver banner "…"`, so an agent can be asked to keep its own banner current.
 - **Subtitle (automatic).** Whichever changed most recently:
   - the program's terminal title (OSC 0/2): Claude Code and Codex both set one, and Codex shows `[ ! ] Action Required` while it waits;
   - the last submitted prompt, from Claude Code's `UserPromptSubmit` hook.
@@ -622,7 +627,7 @@ spectraweaver token [--rotate]
   - Done: multiple sessions; grid and focus views; banners; size invariant with zoom; per-OS keymaps; token and password auth; Origin/Host checks; single-binary builds.
   - To do: raw logs, `attach`, systemd units.
 - **M2, agent awareness.** Status engine, hook installers, notifications, automatic subtitles, revival.
-- **M3, layouts.** Done: tabs with per-tab grids and URLs, moving sessions between tabs, resizing a session. To do: filmstrip, reordering tiles, PWA.
+- **M3, layouts.** Done: tabs with per-tab grids and URLs, moving sessions between tabs, resizing a session, a windows layout per tab. To do: filmstrip, reordering tiles, PWA.
 - **M4, release.** Compatibility test suite, CI release pipeline for every target, docs.
 - **Later:**
   - History viewer and search.

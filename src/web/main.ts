@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import {
   type ClientMessage,
   decodeOutputPayload,
+  type Frame,
   GRID_PATTERN,
   type ServerMessage,
   type SessionView,
@@ -20,6 +21,8 @@ import { createResizeDialog } from "./resize-dialog.ts";
 import { measureFont } from "./sizing.ts";
 import { SESSION_DRAG_TYPE, TabStrip } from "./tabs.ts";
 import { FONT_FAMILY, TermView } from "./term-view.ts";
+import { WindowChrome } from "./window-chrome.ts";
+import { layoutOf, placeWindow, rectToFrame, topZ } from "./windows.ts";
 
 // Refuse to run inside another site's frame, so a page cannot overlay the terminal and trick
 // clicks or keystrokes into it (clickjacking). SameSite=Strict cookies already keep a framed
@@ -82,10 +85,14 @@ function showTab(id: string): void {
 
 const app = document.getElementById("app") as HTMLDivElement;
 const statusDot = el("span", { class: "status down", title: "Connecting…" });
-const gridSelect = el(
+// The tab's layout: windows the user arranges (the default), or a grid of equal tiles (rows × columns).
+const layoutSelect = el(
   "select",
-  { title: "Tiles per screen in this tab: rows × columns" },
-  GRID_PRESETS.map((preset) => el("option", { value: preset }, [formatGrid(parseGrid(preset)!)])),
+  { title: "This tab's layout: windows you move and resize, or a grid of equal tiles, rows × columns" },
+  [
+    el("option", { value: "windows" }, ["Windows"]),
+    ...GRID_PRESETS.map((preset) => el("option", { value: preset }, [`Grid ${formatGrid(parseGrid(preset)!)}`])),
+  ],
 );
 const newButton = el("button", { class: "primary" }, ["+ New terminal"]);
 const stopAgentsButton = el(
@@ -107,7 +114,8 @@ const tabStrip = new TabStrip({
   create: () => {
     const id = randomId();
     const color = TAB_COLORS[(tabs.length + 6) % TAB_COLORS.length]!;
-    send({ t: "tab-create", id, name: `Tab ${tabs.length + 1}`, color, grid: currentView().tab?.grid ?? "2x2" });
+    const from = currentView().tab;
+    send({ t: "tab-create", id, name: `Tab ${tabs.length + 1}`, color, grid: from?.grid ?? "2x2", layout: from?.layout });
     tabStrip.renameOnArrival(id);
     showTab(id);
   },
@@ -148,7 +156,7 @@ if (!window.isSecureContext) {
     ),
   );
 }
-topbar.append(stopAgentsButton, resumeAgentsButton, gridSelect, newButton, settingsButton);
+topbar.append(stopAgentsButton, resumeAgentsButton, layoutSelect, newButton, settingsButton);
 
 stopAgentsButton.addEventListener("click", () => {
   const question =
@@ -190,9 +198,11 @@ function toast(message: string): void {
 const settings = createSettingsDialog(toast);
 settingsButton.addEventListener("click", () => settings.open());
 
-gridSelect.addEventListener("change", () => {
+layoutSelect.addEventListener("change", () => {
   const tab = currentView().tab;
-  if (tab && GRID_PATTERN.test(gridSelect.value)) send({ t: "tab-update", id: tab.id, grid: gridSelect.value });
+  if (!tab) return;
+  if (layoutSelect.value === "windows") switchToWindows(tab);
+  else if (GRID_PATTERN.test(layoutSelect.value)) send({ t: "tab-update", id: tab.id, grid: layoutSelect.value, layout: "grid" });
 });
 new ResizeObserver(() => layoutGrid()).observe(grid);
 // A page in the background stops receiving output after a while. Browsers throttle or
@@ -226,6 +236,42 @@ window.addEventListener("hashchange", () => render());
 
 function gridOf(tab: TabView | null): Grid {
   return parseGrid(tab?.grid ?? "") ?? { rows: 2, cols: 2 };
+}
+
+/**
+ * Lays the tab out as windows, each where its tile is now, stacked in creation order. The
+ * frames go first, so that when the layout change arrives every window is already placed.
+ */
+function switchToWindows(tab: TabView): void {
+  const bounds = grid.getBoundingClientRect();
+  const workspace = { width: grid.clientWidth, height: grid.clientHeight };
+  if (workspace.width >= 10 && workspace.height >= 10) {
+    let z = 0;
+    for (const [id, tile] of tiles) {
+      const rect = tile.root.getBoundingClientRect();
+      const relative = { left: rect.left - bounds.left, top: rect.top - bounds.top, width: rect.width, height: rect.height };
+      send({ t: "session-frame", session: id, frame: rectToFrame(relative, workspace, ++z) });
+    }
+  }
+  send({ t: "tab-update", id: tab.id, layout: "windows" });
+}
+
+/** Brings a window in front of the others in its tab; the stacking is part of the shared layout. */
+function raiseWindow(sessionId: string): void {
+  const tile = tiles.get(sessionId);
+  const mine = tile?.windowFrame;
+  if (!tile || !mine) return;
+  const others: Frame[] = [];
+  for (const other of tiles.values()) if (other !== tile && other.windowFrame) others.push(other.windowFrame);
+  if (!others.some((frame) => frame.z >= mine.z)) return;
+  const raised = { ...mine, z: topZ(others) + 1 };
+  tile.setFrame(raised);
+  send({ t: "session-frame", session: sessionId, frame: raised });
+}
+
+function sameFrame(a: Frame | undefined, b: Frame | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h && a.z === b.z;
 }
 
 function layoutGrid(): void {
@@ -283,6 +329,9 @@ class Tile {
   readonly root: HTMLElement;
   private view: TermView | null = null;
   private session: SessionView;
+  /** Its place as a window while the tab is laid out as windows; null in a grid. */
+  private frame: Frame | null = null;
+  private readonly chrome: WindowChrome;
   private readonly body: HTMLDivElement;
   private readonly banner: HTMLInputElement;
   private readonly subtitle: HTMLSpanElement;
@@ -303,21 +352,37 @@ class Tile {
     const windowButton = el("button", { class: "icon-btn", title: "Open in a new window" }, ["↗"]);
     const closeButton = el("button", { class: "icon-btn", title: "Close terminal" }, ["✕"]);
     this.body = el("div", { class: "tile-body" });
-    this.root = el("section", { class: "tile" }, [
-      el("div", { class: "tile-header" }, [
-        grip,
-        el("span", { class: "bell-dot", title: "Wants attention" }, ["●"]),
-        this.banner,
-        this.subtitle,
-        this.exitBadge,
-        this.stoppedBadge,
-        this.size,
-        this.focusButton,
-        windowButton,
-        closeButton,
-      ]),
-      this.body,
+    const header = el("div", { class: "tile-header" }, [
+      grip,
+      el("span", { class: "bell-dot", title: "Wants attention" }, ["●"]),
+      this.banner,
+      this.subtitle,
+      this.exitBadge,
+      this.stoppedBadge,
+      this.size,
+      this.focusButton,
+      windowButton,
+      closeButton,
     ]);
+    this.root = el("section", { class: "tile" }, [header, this.body]);
+    this.chrome = new WindowChrome({
+      root: this.root,
+      header,
+      banner: this.banner,
+      body: this.body,
+      workspace: grid,
+      frame: () => this.frame,
+      // The terminal follows the window's size while it can be resized; otherwise only the window changes.
+      cell: () => (this.resizable() ? (this.view?.cellSize() ?? null) : null),
+      size: () => ({ cols: this.session.cols, rows: this.session.rows }),
+      commit: (frame, cells) => {
+        this.setFrame(frame); // at once; the server's broadcast confirms it for every browser
+        send({ t: "session-frame", session: this.session.id, frame });
+        if (cells) this.view?.requestResize(cells.cols, cells.rows);
+      },
+      restore: () => this.setFrame(this.frame),
+      raise: () => raiseWindow(this.session.id),
+    });
 
     grip.addEventListener("dragstart", (event) => {
       event.dataTransfer?.setData(SESSION_DRAG_TYPE, this.session.id);
@@ -370,12 +435,37 @@ class Tile {
       notify: toast,
     });
     this.view.mount(this.body);
-    this.view.setResizable(this.resizable());
+    this.view.setResizable(this.resizable() && this.frame === null);
     send({ t: "sub", session: this.session.id });
   }
 
   get terminal(): TermView | null {
     return this.view;
+  }
+
+  get windowFrame(): Frame | null {
+    return this.frame;
+  }
+
+  /**
+   * Places the tile as a window (null puts it back in the grid). As a window, its edges resize
+   * the window and the terminal together, so the terminal's own handles hide.
+   */
+  setFrame(frame: Frame | null): void {
+    this.frame = frame;
+    const style = this.root.style;
+    if (frame) {
+      style.left = `${(frame.x * 100).toFixed(2)}%`;
+      style.top = `${(frame.y * 100).toFixed(2)}%`;
+      style.width = `${(frame.w * 100).toFixed(2)}%`;
+      style.height = `${(frame.h * 100).toFixed(2)}%`;
+      style.zIndex = String(frame.z + 1);
+    } else {
+      style.left = style.top = style.width = style.height = style.zIndex = "";
+    }
+    this.root.classList.toggle("window", frame !== null);
+    this.chrome.setEnabled(frame !== null);
+    this.view?.setResizable(this.resizable() && frame === null);
   }
 
   update(session: SessionView): void {
@@ -389,12 +479,14 @@ class Tile {
     this.size.disabled = !resizable;
     this.size.title = `${
       resizable
-        ? "Columns × rows. Click to resize, or drag the terminal's right edge, bottom edge or corner."
+        ? this.frame
+          ? "Columns × rows. Click to resize, or drag the window's edges or corners."
+          : "Columns × rows. Click to resize, or drag the terminal's right edge, bottom edge or corner."
         : session.exited
           ? "Columns × rows."
           : "Columns × rows. Resizing needs a restarted daemon: spectraweaver down --all (every session ends), then spectraweaver up."
     }\n${session.cwd}`;
-    this.view?.setResizable(resizable);
+    this.view?.setResizable(resizable && this.frame === null);
     const exited = session.exited;
     this.exitBadge.hidden = !exited;
     if (exited) this.exitBadge.textContent = exited.signal ? `exited (${exited.signal})` : `exited ${exited.code ?? ""}`;
@@ -420,6 +512,7 @@ class Tile {
   dispose(): void {
     send({ t: "unsub", session: this.session.id });
     this.view?.dispose();
+    this.chrome.dispose();
     this.root.remove();
   }
 }
@@ -446,6 +539,12 @@ function render(): void {
     ? ordered.filter((session) => session.id === view.focus)
     : ordered.filter((session) => session.tab === view.tab?.id);
   const visibleIds = new Set(visible.map((session) => session.id));
+  // As windows, placed terminals sit where their frames say; the others take a free cell of the
+  // tab's grid, or cascade, worked out the same way in every browser.
+  const windowed = !view.focus && layoutOf(view.tab) === "windows";
+  grid.classList.toggle("windows", windowed);
+  const placed: Frame[] = windowed ? visible.flatMap((session) => (session.frame ? [session.frame] : [])) : [];
+  let unplaced = 0;
 
   for (const [id, tile] of tiles) {
     if (!visibleIds.has(id)) {
@@ -462,6 +561,12 @@ function render(): void {
     } else {
       tile.update(session);
     }
+    let frame: Frame | null = null;
+    if (windowed) {
+      frame = session.frame ?? placeWindow(gridOf(view.tab), placed, unplaced++);
+      if (!session.frame) placed.push(frame);
+    }
+    tile.setFrame(frame);
     if (grid.children[index] !== tile.root) grid.insertBefore(tile.root, grid.children[index] ?? null);
     if (isNew) {
       tile.start(tiles.size <= MAX_WEBGL_TILES);
@@ -473,8 +578,8 @@ function render(): void {
     }
   });
 
-  if (view.tab) gridSelect.value = view.tab.grid;
-  gridSelect.disabled = view.focus !== null;
+  if (view.tab) layoutSelect.value = layoutOf(view.tab) === "windows" ? "windows" : view.tab.grid;
+  layoutSelect.disabled = view.focus !== null;
   empty.hidden = visible.length > 0;
   empty.textContent = view.focus
     ? "This terminal no longer exists."
@@ -509,9 +614,9 @@ function onServerMessage(message: ServerMessage): void {
     case "session": {
       const previous = sessions.get(message.session.id);
       sessions.set(message.session.id, message.session);
-      // Agents retitle their terminals many times a second: unless the session changed
-      // tabs, only its own tile needs updating.
-      if (previous?.tab === message.session.tab) {
+      // Agents retitle their terminals many times a second: unless the session changed tabs
+      // or its window moved (which can move the unplaced windows too), only its own tile needs updating.
+      if (previous?.tab === message.session.tab && sameFrame(previous.frame, message.session.frame)) {
         tiles.get(message.session.id)?.update(message.session);
         updateAgentButtons();
       } else {

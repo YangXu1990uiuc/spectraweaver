@@ -10,7 +10,7 @@ Persistent terminals in the browser, for running many CLI coding agents on a dev
 - **Sessions outlive everything but the machine.** Close the tab, lose the network, restart the web server: programs keep running on the server.
 - **Same state everywhere.** Every browser, window and device sees the same terminals, tabs and banners.
 - **Any CLI.** Claude Code, Codex, Gemini CLI, shells, editors: these are real terminals, rendered with xterm.js, the same engine as VS Code's terminal.
-- **Tabs and banners.** Group terminals into named, coloured tabs, each with its own grid and URL, and give each terminal a note saying what it is doing.
+- **Tabs and banners.** Group terminals into named, coloured tabs, each with its own layout (a grid, or windows you arrange) and URL, and give each terminal a note saying what it is doing.
 - **Never garbled by viewing.** A terminal's size changes only when you resize it yourself. Tiles, windows and zoom only scale the font, so opening a session on another screen never makes a program redraw or lose its scrollback.
 
 ## Quick start
@@ -86,11 +86,11 @@ Closing the browser leaves everything running. After the server reboots, run `sp
 
 ## Using it
 
-- **Tabs:** ＋ adds a tab. Double-click a tab to rename it; right-click to recolour it, open it in a new window, or delete it. Each tab has its own URL (`#t=…`) and its own grid. Drag a terminal by its ⠿ grip onto a tab to move it there. Deleting a tab moves its terminals to the neighbouring tab.
-- **Grid:** rows × columns, in matrix order: "2 × 3" is 2 rows of 3 terminals.
+- **Tabs:** ＋ adds a tab. Double-click a tab to rename it; right-click to recolour it, open it in a new window, or delete it. Each tab has its own URL (`#t=…`) and its own layout. Drag a terminal by its ⠿ grip onto a tab to move it there. Deleting a tab moves its terminals to the neighbouring tab.
+- **Layout:** the selector in the top bar. **Windows** (the default) makes every terminal a window: drag its header to move it, its edges or corners to resize it, click one to bring it to the front, as on a desktop. The arrangement is stored with the tab, so every browser shows it; a new terminal takes a free cell of the tab's grid. **Grid** is rows × columns of equal tiles, in matrix order ("2 × 3" is 2 rows of 3 terminals); choosing one tidies the windows into it.
 - **New terminal:** the size (columns × rows) is pre-filled to fit one tile of the current grid at your usual text size. Edit the numbers if you like.
-- **Resize:** drag the terminal's right edge, bottom edge or corner, as you would a window: the text keeps its size, and the program is told the new size and redraws (double-click the corner to fill the tile; zoom out first for more columns than fit at this text size). For exact numbers, click the size in the tile's header. Every browser follows, since the size belongs to the terminal rather than to the view. Full-screen programs redraw cleanly; inline tools that reprint their output when the width changes (Codex, Gemini CLI) clear the screen and lose their scrollback.
-- **Banner:** click the title area of a tile and type what the terminal is for.
+- **Resize:** in a grid, drag the terminal's right edge, bottom edge or corner inside its tile (double-click the corner to fill the tile; zoom out first for more columns than fit at this text size); in a windows layout, drag the window's edges or corners and the terminal resizes with it. Either way the text keeps its size, and the program is told the new size and redraws. For exact numbers, click the size in the tile's header. Every browser follows, since the size belongs to the terminal rather than to the view. Full-screen programs redraw cleanly; inline tools that reprint their output when the width changes (Codex, Gemini CLI) clear the screen and lose their scrollback.
+- **Banner:** click the title area of a tile and type what the terminal is for (in a windows layout, a click that does not drag the window).
 - **Zoom a tile:** Ctrl/Cmd + `=` / `-` / `0`, or Ctrl + mouse wheel. Zoom only changes the font; 100% fills the tile.
 - **Focus one terminal:** ⤢ on its tile. ↗ opens it in its own window.
 - **Attention:** when a terminal rings the bell, its tile, its tab and the browser tab title are marked until you look at it.

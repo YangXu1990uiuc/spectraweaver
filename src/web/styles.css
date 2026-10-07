@@ -589,6 +589,132 @@ body.resizing {
   overflow-wrap: anywhere;
 }
 
+/* ---- windows layout ---- */
+
+/* The tab as a desktop: windows sit where their frames put them, may overlap, and nothing scrolls. */
+.grid.windows {
+  display: block;
+  position: relative;
+  overflow: hidden;
+  padding: 0;
+}
+
+/* Place and size are the frame, as percentages, so every screen shows the same arrangement. */
+.grid.windows .tile {
+  position: absolute;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+
+.grid.windows .tile.focused {
+  box-shadow:
+    0 0 0 1px var(--tint),
+    0 4px 16px rgba(0, 0, 0, 0.45);
+}
+
+.grid.windows .tile.bell {
+  box-shadow:
+    0 0 0 1px var(--alert),
+    0 4px 16px rgba(0, 0, 0, 0.45);
+}
+
+/* The header drags the window; its buttons and the grip keep their own cursors. */
+.grid.windows .tile-header,
+.grid.windows .banner {
+  cursor: move;
+}
+
+/* Grab zones on the window's edges and corners, inside its border; WindowChrome owns them. */
+.win-edge {
+  position: absolute;
+  z-index: 25;
+  touch-action: none;
+}
+
+.win-n,
+.win-s {
+  left: 12px;
+  right: 12px;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.win-n {
+  top: 0;
+}
+
+.win-s {
+  bottom: 0;
+}
+
+.win-e,
+.win-w {
+  top: 12px;
+  bottom: 12px;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.win-e {
+  right: 0;
+}
+
+.win-w {
+  left: 0;
+}
+
+.win-ne,
+.win-nw,
+.win-se,
+.win-sw {
+  width: 12px;
+  height: 12px;
+}
+
+.win-ne {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+}
+
+.win-sw {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
+}
+
+.win-nw {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+
+.win-se {
+  bottom: 0;
+  right: 0;
+  cursor: nwse-resize;
+}
+
+.win-edge:hover {
+  background: rgba(77, 170, 252, 0.3);
+}
+
+/* The size a window drag will take, drawn in the workspace so it can reach past the window. */
+.win-ghost {
+  position: absolute;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--link);
+  background: rgba(77, 170, 252, 0.12);
+  pointer-events: none;
+}
+
+body.moving-window {
+  user-select: none;
+  cursor: move;
+}
+
 /* ---- dialogs, toast, login ---- */
 
 dialog {

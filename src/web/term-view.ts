@@ -13,7 +13,7 @@ import { installKeymap, type Platform } from "./keymap.ts";
 import { suppressQueryReplies } from "./queries.ts";
 import type { ResizeTarget } from "./resize-dialog.ts";
 import { type ResizeGeometry, ResizeHandles } from "./resize.ts";
-import { cellsThatFit, type FontMetrics, fitTextPx, zoomKeepingText } from "./sizing.ts";
+import { type Area, cellsThatFit, type FontMetrics, fitTextPx, zoomKeepingText } from "./sizing.ts";
 
 /**
  * Zoom is a fraction of the font size that exactly fills the tile; 1 is the maximum. Ctrl + / -
@@ -271,6 +271,11 @@ export class TermView {
     const textPx = this.term.options.fontSize ?? BASE_FONT_SIZE;
     this.pendingResize = { cols, rows, textPx, at: Date.now() };
     this.options.send({ t: "resize", session: this.sessionId, cols, rows });
+  }
+
+  /** One cell as drawn now, in CSS px; null while the terminal cannot be measured. */
+  cellSize(): Area | null {
+    return this.geometry()?.cell ?? null;
   }
 
   /** Resizes to the most cells that fit the tile at the current text size. */

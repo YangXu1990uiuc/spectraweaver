@@ -99,6 +99,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     tab: meta.tabOf(session.id),
     color: meta.colorOf(session.id, sessions.keys()),
     stopped: meta.stopped(session.id),
+    frame: meta.frameOf(session.id),
   });
 
   const send = (client: Client, data: string | Uint8Array) => {
@@ -333,6 +334,11 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         if (sessions.has(id) && meta.setSessionTab(id, String(message.tab), sessions.keys())) broadcastSession(id);
         return;
       }
+      case "session-frame": {
+        const id = String(message.session);
+        if (sessions.has(id) && meta.setSessionFrame(id, message.frame)) broadcastSession(id);
+        return;
+      }
       case "tab-create":
         if (
           meta.createTab({
@@ -340,6 +346,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
             name: String(message.name ?? ""),
             color: String(message.color ?? ""),
             grid: String(message.grid ?? ""),
+            layout: message.layout,
           })
         ) {
           broadcastTabs();
@@ -351,6 +358,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
             name: typeof message.name === "string" ? message.name : undefined,
             color: typeof message.color === "string" ? message.color : undefined,
             grid: typeof message.grid === "string" ? message.grid : undefined,
+            layout: message.layout,
           })
         ) {
           broadcastTabs();

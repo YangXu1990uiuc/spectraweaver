@@ -91,6 +91,47 @@ export interface SessionView extends SessionInfo {
   color: string;
   /** A coding agent stopped by "Stop agents", waiting for "Resume agents". */
   stopped?: StoppedAgent;
+  /** Where its window sits while its tab lays terminals out as windows; absent until the user places it. */
+  frame?: Frame;
+}
+
+/**
+ * A terminal's window in its tab under the "windows" layout: position and size as fractions of
+ * the workspace, so every screen shows the same arrangement at its own size, and `z`, which
+ * orders overlapping windows (higher is in front).
+ */
+export interface Frame {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  z: number;
+}
+
+/** The smallest side a window may have, as a fraction of the workspace. */
+export const FRAME_MIN_SIDE = 0.02;
+const FRAME_MAX_Z = 1_000_000_000;
+
+/**
+ * Checks a frame a browser sent: finite numbers, rounded to 1/10000 (meta.json stays short),
+ * each side at least FRAME_MIN_SIDE, and inside the workspace (a window dragged over an edge is
+ * pulled back). Null if it is not a frame at all.
+ */
+export function normalizeFrame(input: unknown): Frame | null {
+  if (typeof input !== "object" || input === null) return null;
+  const { x, y, w, h, z } = input as Record<string, unknown>;
+  const numbers = [x, y, w, h, z];
+  if (!numbers.every((value) => typeof value === "number" && Number.isFinite(value))) return null;
+  const round = (value: number) => Math.round(value * 10_000) / 10_000;
+  const width = Math.min(1, Math.max(FRAME_MIN_SIDE, round(w as number)));
+  const height = Math.min(1, Math.max(FRAME_MIN_SIDE, round(h as number)));
+  return {
+    x: round(Math.min(1 - width, Math.max(0, round(x as number)))),
+    y: round(Math.min(1 - height, Math.max(0, round(y as number)))),
+    w: width,
+    h: height,
+    z: Math.min(FRAME_MAX_Z, Math.max(0, Math.round(z as number))),
+  };
 }
 
 export interface StoppedAgent {
@@ -106,6 +147,18 @@ export interface TabView {
   color: string;
   /** Tiles per screen in matrix order, "rowsxcols": "2x3" is 2 rows of 3 tiles. */
   grid: string;
+  /**
+   * How the tab arranges its terminals: windows the user moves and resizes (the default, and what
+   * a tab from before this field means), or a grid of equal tiles. The grid sizes new windows too.
+   */
+  layout?: TabLayout;
+}
+
+export const TAB_LAYOUTS = ["grid", "windows"] as const;
+export type TabLayout = (typeof TAB_LAYOUTS)[number];
+
+export function isTabLayout(value: unknown): value is TabLayout {
+  return (TAB_LAYOUTS as readonly unknown[]).includes(value);
 }
 
 export const TAB_COLORS = [
@@ -138,8 +191,10 @@ export type ClientMessage =
   | { t: "resize"; session: string; cols: number; rows: number }
   | { t: "banner"; session: string; banner: string }
   | { t: "session-move"; session: string; tab: string }
-  | { t: "tab-create"; id: string; name: string; color: string; grid: string }
-  | { t: "tab-update"; id: string; name?: string; color?: string; grid?: string }
+  /** Places or restacks a terminal's window; the server checks it with normalizeFrame. */
+  | { t: "session-frame"; session: string; frame: Frame }
+  | { t: "tab-create"; id: string; name: string; color: string; grid: string; layout?: TabLayout }
+  | { t: "tab-update"; id: string; name?: string; color?: string; grid?: string; layout?: TabLayout }
   | { t: "tab-delete"; id: string }
   | { t: "tab-move"; id: string; index: number }
   | { t: "agents-stop" }

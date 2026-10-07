@@ -4,13 +4,24 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { writeFileAtomic } from "../common/files.ts";
-import { GRID_PATTERN, type StoppedAgent, TAB_COLORS, type TabView, TILE_COLORS } from "../common/protocol.ts";
+import {
+  type Frame,
+  GRID_PATTERN,
+  isTabLayout,
+  normalizeFrame,
+  type StoppedAgent,
+  TAB_COLORS,
+  type TabView,
+  TILE_COLORS,
+} from "../common/protocol.ts";
 
 interface SessionMeta {
   banner?: string;
   tab?: string;
   color?: string;
   stopped?: StoppedAgent;
+  /** The session's window in its tab's "windows" layout; absent until the user places it. */
+  frame?: Frame;
 }
 
 interface MetaFile {
@@ -25,8 +36,8 @@ const DEFAULT_TAB: TabView = { id: "00000000", name: "Main", color: "#3794ff", g
 
 /**
  * Presentational state owned by the server: tabs (workspaces) and per-session banners,
- * colours and tab membership. There is always at least one tab; a session whose tab is missing belongs
- * to the first one.
+ * colours, tab membership and window frames. There is always at least one tab; a session whose
+ * tab is missing belongs to the first one.
  */
 export class MetaStore {
   private data: MetaFile = { version: 2, tabs: [{ ...DEFAULT_TAB }], sessions: {} };
@@ -93,10 +104,25 @@ export class MetaStore {
     this.patchSession(sessionId, { stopped });
   }
 
-  /** Moves a session to a tab. It keeps its colour unless a session there already has it. */
+  frameOf(sessionId: string): Frame | undefined {
+    return this.data.sessions[sessionId]?.frame;
+  }
+
+  /** Places a session's window; false if the frame is malformed (it is checked, not trusted). */
+  setSessionFrame(sessionId: string, frame: unknown): boolean {
+    const normalized = normalizeFrame(frame);
+    if (!normalized) return false;
+    this.patchSession(sessionId, { frame: normalized });
+    return true;
+  }
+
+  /**
+   * Moves a session to a tab. It keeps its colour unless a session there already has it, and
+   * loses its window frame: a frame belongs to the arrangement of the tab it was placed in.
+   */
   setSessionTab(sessionId: string, tabId: string, liveIds: Iterable<string> = []): boolean {
     if (!this.hasTab(tabId)) return false;
-    this.patchSession(sessionId, { tab: tabId });
+    this.placeInTab(sessionId, tabId);
     this.keepColorDistinct(sessionId, [...liveIds]);
     return true;
   }
@@ -108,17 +134,19 @@ export class MetaStore {
       name: cleanName(tab.name) || "New tab",
       color: COLOR.test(tab.color) ? tab.color : TAB_COLORS[0],
       grid: GRID_PATTERN.test(tab.grid) ? tab.grid : DEFAULT_TAB.grid,
+      ...(isTabLayout(tab.layout) ? { layout: tab.layout } : {}),
     });
     this.scheduleSave();
     return true;
   }
 
-  updateTab(id: string, patch: { name?: string; color?: string; grid?: string }): boolean {
+  updateTab(id: string, patch: { name?: string; color?: string; grid?: string; layout?: unknown }): boolean {
     const tab = this.data.tabs.find((candidate) => candidate.id === id);
     if (!tab) return false;
     if (patch.name !== undefined && cleanName(patch.name)) tab.name = cleanName(patch.name);
     if (patch.color !== undefined && COLOR.test(patch.color)) tab.color = patch.color;
     if (patch.grid !== undefined && GRID_PATTERN.test(patch.grid)) tab.grid = patch.grid;
+    if (isTabLayout(patch.layout)) tab.layout = patch.layout;
     this.scheduleSave();
     return true;
   }
@@ -135,7 +163,7 @@ export class MetaStore {
     const moved: string[] = [];
     for (const sessionId of live) {
       if (this.tabOf(sessionId) === id) {
-        this.patchSession(sessionId, { tab: neighbour });
+        this.placeInTab(sessionId, neighbour);
         this.keepColorDistinct(sessionId, live);
         moved.push(sessionId);
       }
@@ -169,6 +197,12 @@ export class MetaStore {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = null;
     writeFileAtomic(this.file, JSON.stringify(this.data, null, 2));
+  }
+
+  /** A session arriving in another tab has no window there yet; one already in the tab keeps its frame. */
+  private placeInTab(sessionId: string, tabId: string): void {
+    if (this.tabOf(sessionId) === tabId) return;
+    this.patchSession(sessionId, { tab: tabId, frame: undefined });
   }
 
   private keepColorDistinct(sessionId: string, liveIds: string[]): void {
