@@ -11,7 +11,7 @@ Persistent terminals in the browser, for running many CLI coding agents on a dev
 - **Same state everywhere.** Every browser, window and device sees the same terminals, tabs and banners.
 - **Any CLI.** Claude Code, Codex, Gemini CLI, shells, editors: these are real terminals, rendered with xterm.js, the same engine as VS Code's terminal.
 - **Tabs and banners.** Group terminals into named, coloured tabs, each with its own grid and URL, and give each terminal a note saying what it is doing.
-- **Never garbled by viewing.** A terminal's size is fixed when you create it. Tiles, windows and zoom only scale the font, so opening a session on another screen never makes a program redraw or lose its scrollback.
+- **Never garbled by viewing.** A terminal's size changes only when you resize it yourself. Tiles, windows and zoom only scale the font, so opening a session on another screen never makes a program redraw or lose its scrollback.
 
 ## Quick start
 
@@ -88,7 +88,8 @@ Closing the browser leaves everything running. After the server reboots, run `sp
 
 - **Tabs:** ＋ adds a tab. Double-click a tab to rename it; right-click to recolour it, open it in a new window, or delete it. Each tab has its own URL (`#t=…`) and its own grid. Drag a terminal by its ⠿ grip onto a tab to move it there. Deleting a tab moves its terminals to the neighbouring tab.
 - **Grid:** rows × columns, in matrix order: "2 × 3" is 2 rows of 3 terminals.
-- **New terminal:** the size (columns × rows) is pre-filled to fit one tile of the current grid at your usual text size. Edit the numbers if you like; the size cannot change later.
+- **New terminal:** the size (columns × rows) is pre-filled to fit one tile of the current grid at your usual text size. Edit the numbers if you like.
+- **Resize:** drag the terminal's right edge, bottom edge or corner, as you would a window: the text keeps its size, and the program is told the new size and redraws (double-click the corner to fill the tile; zoom out first for more columns than fit at this text size). For exact numbers, click the size in the tile's header. Every browser follows, since the size belongs to the terminal rather than to the view. Full-screen programs redraw cleanly; inline tools that reprint their output when the width changes (Codex, Gemini CLI) clear the screen and lose their scrollback.
 - **Banner:** click the title area of a tile and type what the terminal is for.
 - **Zoom a tile:** Ctrl/Cmd + `=` / `-` / `0`, or Ctrl + mouse wheel. Zoom only changes the font; 100% fills the tile.
 - **Focus one terminal:** ⤢ on its tile. ↗ opens it in its own window.
@@ -125,6 +126,7 @@ SpectraWeaver uses no file locks and no SQLite, the usual sources of NFS trouble
 | `spectraweaver passwd [--clear]` | Set (or remove) the password for signing in from the browser. |
 | `spectraweaver token [--rotate]` | Print the login token and link; `--rotate` replaces the token and signs out every browser. |
 | `spectraweaver new [--size 120x36] [--cwd DIR] [-- COMMAND]` | Create a session from the command line. |
+| `spectraweaver resize ID COLSxROWS` | Change a session's size; the program is told and redraws. |
 | `spectraweaver ls` | List sessions. |
 | `spectraweaver config [state-dir PATH \| --reset]` | Show where config and state live, or move this host's state. |
 

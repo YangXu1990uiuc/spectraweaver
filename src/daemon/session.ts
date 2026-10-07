@@ -128,6 +128,30 @@ export class Session {
   }
 
   /**
+   * Changes the session's size. The program is told (SIGWINCH) and redraws. The engine takes the
+   * new grid in a write callback, at the point of the output stream it has reached, and the
+   * "resized" event and `done` follow there: a snapshot asked for afterwards (the server asks one
+   * for every viewer) shows the new grid, and what the program prints in answer to the signal is
+   * read in a later turn of the event loop, so the engine parses it at the new size.
+   */
+  resize(cols: number, rows: number, done: (info: SessionInfo) => void): void {
+    if (this.state.exited) throw new Error("the session has exited");
+    if (cols === this.state.cols && rows === this.state.rows) {
+      done(this.info());
+      return;
+    }
+    this.engine.write("", () => {
+      this.engine.resize(cols, rows);
+      this.state.cols = cols;
+      this.state.rows = rows;
+      this.options.emit({ type: "resized", session: this.id, cols, rows });
+      done(this.info());
+    });
+    const terminal = this.proc.terminal;
+    if (terminal && !terminal.closed) terminal.resize(cols, rows);
+  }
+
+  /**
    * Focus reports are aggregated across all viewers: the program sees "focused" while at
    * least one viewer has the session focused. Viewers' own focus reports are dropped.
    */

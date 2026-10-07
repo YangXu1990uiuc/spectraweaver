@@ -11,12 +11,21 @@ import { type ClientMessage, type SessionView, type Snapshot, THEME } from "../c
 import { loadSetting, saveSetting } from "./dom.ts";
 import { installKeymap, type Platform } from "./keymap.ts";
 import { suppressQueryReplies } from "./queries.ts";
+import type { ResizeTarget } from "./resize-dialog.ts";
+import { type ResizeGeometry, ResizeHandles } from "./resize.ts";
+import { cellsThatFit, type FontMetrics, fitTextPx, zoomKeepingText } from "./sizing.ts";
 
-/** Zoom is a fraction of the font size that exactly fills the tile; 1 is the maximum. */
+/**
+ * Zoom is a fraction of the font size that exactly fills the tile; 1 is the maximum. Ctrl + / -
+ * step through these; a resize that keeps the text size can land between them (keepTextSize).
+ */
 const ZOOM_STEPS = [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3];
+const MIN_ZOOM = ZOOM_STEPS[ZOOM_STEPS.length - 1]!;
 const BASE_FONT_SIZE = 14;
 const MIN_FONT_SIZE = 3;
 const MAX_FONT_SIZE = 72;
+/** A resize this tile asked for is forgotten after this long without the snapshot that applies it. */
+const PENDING_RESIZE_MS = 10_000;
 export const FONT_FAMILY =
   '"JetBrains Mono", "Cascadia Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace';
 
@@ -66,8 +75,9 @@ function openLink(uri: string): void {
 }
 
 /**
- * One session rendered in one tile. The terminal keeps the session's fixed size forever;
- * fitting the tile and zooming only change the font size (DESIGN.md §4).
+ * One session rendered in one tile. The terminal keeps the session's size until the session is
+ * resized on purpose (requestResize); fitting the tile and zooming only change the font size
+ * (DESIGN.md §4).
  */
 export class TermView {
   readonly element: HTMLDivElement;
@@ -75,7 +85,8 @@ export class TermView {
   private readonly sessionId: string;
   private ready = false;
   private expectedOffset = 0;
-  private zoomIndex: number;
+  /** A fraction of the font that fills the tile, MIN_ZOOM..1. */
+  private zoom: number;
   private focused = false;
   private fitScheduled = false;
   private resizeObserver: ResizeObserver | null = null;
@@ -83,11 +94,15 @@ export class TermView {
   private paused = false;
   /** When the last snapshot request went out, until the snapshot arrives. */
   private awaitingSnapshotSince: number | null = null;
+  private handles: ResizeHandles | null = null;
+  private resizable = false;
+  /** A resize this tile asked for, until the snapshot at the new size arrives. */
+  private pendingResize: { cols: number; rows: number; textPx: number; at: number } | null = null;
 
   constructor(private readonly options: TermViewOptions) {
     const { session } = options;
     this.sessionId = session.id;
-    this.zoomIndex = loadZoom(session.id);
+    this.zoom = loadZoom(session.id);
     this.element = document.createElement("div");
     this.element.className = "term-host";
     this.term = new Terminal({
@@ -114,6 +129,13 @@ export class TermView {
     parent.appendChild(this.element);
     const term = this.term;
     term.open(this.element);
+    this.handles = new ResizeHandles({
+      host: this.element,
+      geometry: () => this.geometry(),
+      commit: (cols, rows) => this.requestResize(cols, rows),
+      fill: () => this.fillTile(),
+    });
+    this.handles.setEnabled(this.resizable);
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = "11";
     term.loadAddon(new WebLinksAddon((_event, uri) => openLink(uri)));
@@ -131,7 +153,7 @@ export class TermView {
     if (this.options.useWebgl) this.enableWebgl();
     suppressQueryReplies(term);
     installKeymap(term, this.options.platform, {
-      zoom: (direction) => this.zoom(direction),
+      zoom: (direction) => this.zoomStep(direction),
       send: (data) => this.sendInput(data),
     });
 
@@ -152,7 +174,7 @@ export class TermView {
         if (!event.ctrlKey && !event.metaKey) return;
         event.preventDefault();
         event.stopPropagation();
-        this.zoom(event.deltaY < 0 ? 1 : -1);
+        this.zoomStep(event.deltaY < 0 ? 1 : -1);
       },
       { passive: false, capture: true },
     );
@@ -169,6 +191,12 @@ export class TermView {
 
   applySnapshot(snapshot: Snapshot): void {
     if (snapshot.cols !== this.term.cols || snapshot.rows !== this.term.rows) {
+      // A resize this tile asked for keeps the text at the size it had, as a window keeps its
+      // font when it is dragged larger or smaller; other tiles keep their zoom.
+      const pending = this.pendingResize;
+      this.pendingResize = null;
+      const ours = pending && pending.cols === snapshot.cols && pending.rows === snapshot.rows;
+      if (ours && Date.now() - pending.at < PENDING_RESIZE_MS) this.keepTextSize(pending.textPx, snapshot.cols, snapshot.rows);
       this.term.resize(snapshot.cols, snapshot.rows);
       this.scheduleFit();
     }
@@ -228,9 +256,50 @@ export class TermView {
     this.term.refresh(0, this.term.rows - 1);
   }
 
+  /** Whether the edges can be dragged: the daemon must know how, and the program must be running. */
+  setResizable(enabled: boolean): void {
+    this.resizable = enabled;
+    this.handles?.setEnabled(enabled);
+  }
+
+  /**
+   * Asks the daemon for a new size; the snapshot that follows applies it (applySnapshot). The
+   * size belongs to the session, so every browser follows.
+   */
+  requestResize(cols: number, rows: number): void {
+    if (cols === this.term.cols && rows === this.term.rows) return;
+    const textPx = this.term.options.fontSize ?? BASE_FONT_SIZE;
+    this.pendingResize = { cols, rows, textPx, at: Date.now() };
+    this.options.send({ t: "resize", session: this.sessionId, cols, rows });
+  }
+
+  /** Resizes to the most cells that fit the tile at the current text size. */
+  fillTile(): void {
+    const geometry = this.geometry();
+    if (!geometry) return;
+    const { cols, rows } = cellsThatFit(geometry.area, geometry.cell);
+    this.requestResize(cols, rows);
+  }
+
+  /** What the resize dialog needs, measured now; null while the terminal cannot be measured. */
+  resizeTarget(name: string): ResizeTarget | null {
+    const geometry = this.geometry();
+    if (!geometry) return null;
+    return {
+      name,
+      cols: geometry.cols,
+      rows: geometry.rows,
+      area: geometry.area,
+      font: this.fontAsDrawn(geometry),
+      fill: cellsThatFit(geometry.area, geometry.cell),
+      commit: (cols, rows) => this.requestResize(cols, rows),
+    };
+  }
+
   dispose(): void {
     if (this.focused) this.setFocused(false);
     this.resizeObserver?.disconnect();
+    this.handles?.dispose();
     this.term.dispose();
     this.element.remove();
   }
@@ -246,10 +315,12 @@ export class TermView {
     this.options.onFocusChange(focused);
   }
 
-  private zoom(direction: 1 | -1 | 0): void {
-    const next = direction === 0 ? 0 : this.zoomIndex - direction;
-    this.zoomIndex = Math.min(ZOOM_STEPS.length - 1, Math.max(0, next));
-    saveZoom(this.sessionId, this.zoomIndex);
+  /** Ctrl + / - / 0: to the next step above or below the current zoom, or back to filling the tile. */
+  private zoomStep(direction: 1 | -1 | 0): void {
+    if (direction === 0) this.zoom = 1;
+    else if (direction > 0) this.zoom = ZOOM_STEPS.filter((step) => step > this.zoom + 1e-6).at(-1) ?? this.zoom;
+    else this.zoom = ZOOM_STEPS.find((step) => step < this.zoom - 1e-6) ?? this.zoom;
+    saveZoom(this.sessionId, this.zoom);
     this.scheduleFit();
   }
 
@@ -271,7 +342,7 @@ export class TermView {
     const height = this.element.clientHeight;
     const screen = this.term.element?.querySelector<HTMLElement>(".xterm-screen");
     if (!screen || width < 10 || height < 10) return false;
-    const zoom = ZOOM_STEPS[this.zoomIndex] ?? 1;
+    const zoom = this.zoom;
     const start = this.term.options.fontSize ?? BASE_FONT_SIZE;
     let size = start;
     for (let i = 0; i < 6; i++) {
@@ -288,7 +359,42 @@ export class TermView {
       size -= 0.25;
       this.term.options.fontSize = size;
     }
+    this.handles?.layout();
     return size !== start;
+  }
+
+  /** The terminal as drawn now: grid, cell and screen size, and the tile area it may fill. */
+  private geometry(): ResizeGeometry | null {
+    const screen = this.term.element?.querySelector<HTMLElement>(".xterm-screen");
+    const width = screen?.offsetWidth ?? 0;
+    const height = screen?.offsetHeight ?? 0;
+    if (!width || !height) return null;
+    return {
+      cols: this.term.cols,
+      rows: this.term.rows,
+      cell: { width: width / this.term.cols, height: height / this.term.rows },
+      screen: { width, height },
+      area: { width: this.element.clientWidth, height: this.element.clientHeight },
+    };
+  }
+
+  /** The font's cell shape from the cells xterm.js draws, rather than from a probe of the font. */
+  private fontAsDrawn(geometry: ResizeGeometry): FontMetrics {
+    const textPx = this.term.options.fontSize ?? BASE_FONT_SIZE;
+    return {
+      widthRatio: geometry.cell.width / textPx,
+      heightRatio: geometry.cell.height / textPx,
+      devicePixelRatio: window.devicePixelRatio || 1,
+    };
+  }
+
+  /** Sets the zoom at which the new grid shows text of size `textPx` in this tile, as now. */
+  private keepTextSize(textPx: number, cols: number, rows: number): void {
+    const geometry = this.geometry();
+    if (!geometry) return;
+    const fillPx = fitTextPx(geometry.area, cols, rows, this.fontAsDrawn(geometry));
+    this.zoom = zoomKeepingText(fillPx, textPx, MIN_ZOOM);
+    saveZoom(this.sessionId, this.zoom);
   }
 
   private enableWebgl(): void {
@@ -343,11 +449,14 @@ function clampFont(size: number): number {
   return Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, size));
 }
 
+/** Stored as a fraction with decimals ("0.935"); a bare digit is the former format, an index into ZOOM_STEPS. */
 function loadZoom(sessionId: string): number {
-  const value = Number(loadSetting(`zoom.${sessionId}`, "0"));
-  return Number.isInteger(value) && value >= 0 && value < ZOOM_STEPS.length ? value : 0;
+  const stored = loadSetting(`zoom.${sessionId}`, "1.000");
+  if (/^\d$/.test(stored)) return ZOOM_STEPS[Number(stored)] ?? 1;
+  const value = Number(stored);
+  return Number.isFinite(value) && value >= MIN_ZOOM && value <= 1 ? value : 1;
 }
 
-function saveZoom(sessionId: string, index: number): void {
-  saveSetting(`zoom.${sessionId}`, String(index));
+function saveZoom(sessionId: string, zoom: number): void {
+  saveSetting(`zoom.${sessionId}`, zoom.toFixed(3));
 }

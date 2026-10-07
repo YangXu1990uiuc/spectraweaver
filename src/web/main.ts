@@ -16,6 +16,7 @@ import { adoptFormerSettings, el, formatGrid, type Grid, loadSetting, parseGrid,
 import { detectPlatform } from "./keymap.ts";
 import { createSettingsDialog, ensureLogin } from "./login.ts";
 import { createNewTerminalDialog } from "./new-dialog.ts";
+import { createResizeDialog } from "./resize-dialog.ts";
 import { measureFont } from "./sizing.ts";
 import { SESSION_DRAG_TYPE, TabStrip } from "./tabs.ts";
 import { FONT_FAMILY, TermView } from "./term-view.ts";
@@ -46,6 +47,8 @@ const belled = new Set<string>();
 let socket: WebSocket | null = null;
 let connected = false;
 let daemonUp = false;
+/** What the daemon can do beyond the basics ("resize"), from the server's daemon message. */
+let daemonFeatures = new Set<string>();
 let reconnectDelay = 250;
 let createdHereAt = 0;
 
@@ -254,6 +257,7 @@ const newDialog = createNewTerminalDialog({
   },
 });
 newButton.addEventListener("click", () => newDialog.open());
+const resizeDialog = createResizeDialog();
 
 function setStatus(): void {
   statusDot.className = `status ${connected ? (daemonUp ? "ok" : "warn") : "down"}`;
@@ -282,7 +286,7 @@ class Tile {
   private readonly body: HTMLDivElement;
   private readonly banner: HTMLInputElement;
   private readonly subtitle: HTMLSpanElement;
-  private readonly size: HTMLSpanElement;
+  private readonly size: HTMLButtonElement;
   private readonly exitBadge: HTMLSpanElement;
   private readonly stoppedBadge: HTMLSpanElement;
   private readonly focusButton: HTMLButtonElement;
@@ -292,7 +296,7 @@ class Tile {
     const grip = el("span", { class: "grip", draggable: "true", title: "Drag onto a tab to move this terminal" }, ["⠿"]);
     this.banner = el("input", { class: "banner", placeholder: "What is this terminal doing?", spellcheck: "false" });
     this.subtitle = el("span", { class: "subtitle" });
-    this.size = el("span", { class: "meta" });
+    this.size = el("button", { class: "meta size-btn", type: "button" });
     this.exitBadge = el("span", { class: "badge exited", hidden: "" });
     this.stoppedBadge = el("span", { class: "badge stopped", hidden: "" });
     this.focusButton = el("button", { class: "icon-btn", title: "Focus this terminal" }, ["⤢"]);
@@ -344,6 +348,10 @@ class Tile {
       if (!this.session.exited && !confirm("Close this terminal? Its program will be terminated.")) return;
       send({ t: "close", session: this.session.id });
     });
+    this.size.addEventListener("click", () => {
+      const target = this.view?.resizeTarget(nameOf(this.session.id));
+      if (target) resizeDialog.open(target);
+    });
     this.update(session);
   }
 
@@ -362,6 +370,7 @@ class Tile {
       notify: toast,
     });
     this.view.mount(this.body);
+    this.view.setResizable(this.resizable());
     send({ t: "sub", session: this.session.id });
   }
 
@@ -376,7 +385,16 @@ class Tile {
     this.subtitle.textContent = session.title;
     this.subtitle.title = session.title;
     this.size.textContent = `${session.cols}×${session.rows}`;
-    this.size.title = `Fixed size · ${session.cwd}`;
+    const resizable = this.resizable();
+    this.size.disabled = !resizable;
+    this.size.title = `${
+      resizable
+        ? "Columns × rows. Click to resize, or drag the terminal's right edge, bottom edge or corner."
+        : session.exited
+          ? "Columns × rows."
+          : "Columns × rows. Resizing needs a restarted daemon: spectraweaver down --all (every session ends), then spectraweaver up."
+    }\n${session.cwd}`;
+    this.view?.setResizable(resizable);
     const exited = session.exited;
     this.exitBadge.hidden = !exited;
     if (exited) this.exitBadge.textContent = exited.signal ? `exited (${exited.signal})` : `exited ${exited.code ?? ""}`;
@@ -387,6 +405,16 @@ class Tile {
     }
     this.focusButton.textContent = currentView().focus === session.id ? "⤡" : "⤢";
     this.root.classList.toggle("bell", belled.has(session.id));
+  }
+
+  /** The daemon message changed: the terminal's controls follow what the daemon can do. */
+  refresh(): void {
+    this.update(this.session);
+  }
+
+  /** Whether this terminal can be resized: the daemon must know how, and the program must be running. */
+  private resizable(): boolean {
+    return daemonFeatures.has("resize") && !this.session.exited;
   }
 
   dispose(): void {
@@ -464,7 +492,9 @@ function onServerMessage(message: ServerMessage): void {
       return;
     case "daemon":
       daemonUp = message.up;
+      daemonFeatures = new Set(message.features ?? []);
       setStatus();
+      for (const tile of tiles.values()) tile.refresh();
       return;
     case "tabs":
       tabs = message.tabs;
@@ -596,7 +626,7 @@ async function reconnect(): Promise<void> {
 
 function showApp(): void {
   const main = el("div", { class: "main" }, [grid, empty]);
-  app.replaceChildren(topbar, notice, main, newDialog.element, settings.element, toastBox);
+  app.replaceChildren(topbar, notice, main, newDialog.element, resizeDialog.element, settings.element, toastBox);
   setStatus();
   render();
 }

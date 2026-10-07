@@ -5,6 +5,7 @@
 import { Terminal } from "@xterm/headless";
 import { afterEach, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
+import type { DaemonEvent, SessionInfo, Snapshot } from "../src/common/protocol.ts";
 import { Session, type Subscriber } from "../src/daemon/session.ts";
 import { suppressQueryReplies } from "../src/web/queries.ts";
 import { fixture, TEST_SHELL, until } from "./helpers.ts";
@@ -16,7 +17,7 @@ afterEach(() => {
   for (const session of sessions.splice(0)) session.dispose();
 });
 
-function makeSession(): Session {
+function makeSession(emit: (event: DaemonEvent) => void = () => {}): Session {
   const session = new Session({
     id: "test",
     cols: 80,
@@ -26,7 +27,7 @@ function makeSession(): Session {
     argv: TEST_SHELL,
     env: process.env,
     scrollback: 1000,
-    emit: () => {},
+    emit,
     onExited: () => {},
   });
   sessions.push(session);
@@ -147,4 +148,29 @@ test("a startup command is typed into the shell, which stays afterwards", async 
   await subscribe(session, recorder);
   await until(() => recorder.text.includes("started-42"), "the startup command's output");
   expect(session.exited).toBe(false);
+}, 20_000);
+
+test("a resize tells the program, moves the engine at that point of the stream, and reports it", async () => {
+  const events: DaemonEvent[] = [];
+  const session = makeSession((event) => events.push(event));
+  const recorder = new Recorder();
+  await subscribe(session, recorder);
+  session.writeInput("stty size\r");
+  // bash prints the result after a bare CR, hence [\r\n] rather than \n.
+  await until(() => /[\r\n]24 80\r?\n/.test(recorder.text), "the size before");
+
+  const info = await new Promise<SessionInfo>((resolve) => session.resize(100, 30, resolve));
+  expect([info.cols, info.rows]).toEqual([100, 30]);
+  expect(events).toContainEqual({ type: "resized", session: "test", cols: 100, rows: 30 });
+  // A snapshot asked for after the resize shows the new grid.
+  const snapshot = await new Promise<Snapshot>((resolve) => session.snapshot(resolve));
+  expect([snapshot.cols, snapshot.rows]).toEqual([100, 30]);
+  // The program was told: the PTY has the new size.
+  session.writeInput("stty size\r");
+  await until(() => /[\r\n]30 100\r?\n/.test(recorder.text), "the size after");
+
+  // The same size again is answered without an event.
+  const same = await new Promise<SessionInfo>((resolve) => session.resize(100, 30, resolve));
+  expect([same.cols, same.rows]).toEqual([100, 30]);
+  expect(events.filter((event) => event.type === "resized")).toHaveLength(1);
 }, 20_000);

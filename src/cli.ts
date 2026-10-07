@@ -45,6 +45,8 @@ Usage:
                         print the login token and link; --rotate replaces it
   spectraweaver new [--size 120x36] [--cwd DIR] [-- COMMAND...]
                         create a session (COMMAND is typed into its shell)
+  spectraweaver resize ID COLSxROWS
+                        change a session's size; the program is told and redraws
   spectraweaver ls        list sessions
   spectraweaver config    show where config and state live
   spectraweaver config state-dir PATH | --reset
@@ -471,6 +473,26 @@ async function cmdNew(args: string[]): Promise<void> {
   console.log(session.id);
 }
 
+async function cmdResize(args: string[]): Promise<void> {
+  const [id, size] = args;
+  const match = /^(\d+)x(\d+)$/i.exec(size ?? "");
+  if (!id || !match) fail("usage: spectraweaver resize ID COLSxROWS, for example: spectraweaver resize 1a2b3c4d 132x40");
+  const paths = resolvePaths();
+  const hello = await daemonHello(paths);
+  if (hello && !hello.features?.includes("resize")) {
+    fail(
+      "this daemon predates resizing; restart it with `spectraweaver down --all` (every session ends), then `spectraweaver up`",
+    );
+  }
+  const session = await daemonCall<SessionInfo>(paths, {
+    op: "resize",
+    session: id,
+    cols: Number(match[1]),
+    rows: Number(match[2]),
+  });
+  console.log(`${session.id}  ${session.cols}x${session.rows}`);
+}
+
 async function cmdList(): Promise<void> {
   const list = await daemonCall<SessionInfo[]>(resolvePaths(), { op: "list" });
   if (list.length === 0) {
@@ -603,6 +625,9 @@ try {
       break;
     case "new":
       await cmdNew(args);
+      break;
+    case "resize":
+      await cmdResize(args);
       break;
     case "ls":
       await cmdList();

@@ -166,6 +166,39 @@ test("two tabs mirror one session, a new tab restores it, banners sync", async (
   c.close();
 }, 20_000);
 
+test("resizing from one tab: every tab learns the size and gets a fresh screen, and the program sees it", async () => {
+  const a = await Tab.open();
+  const b = await Tab.open();
+  const daemonMessage = await a.next<{ t: "daemon"; up: boolean; features?: string[] }>((m) => m.t === "daemon");
+  expect(daemonMessage.up).toBe(true);
+  expect(daemonMessage.features).toContain("resize");
+  a.send({ t: "create", cols: 80, rows: 24 });
+  const { session } = await a.next<{ t: "session"; session: SessionView }>((m) => m.t === "session");
+  await b.next((m) => m.t === "session" && m.session.id === session.id);
+  a.send({ t: "sub", session: session.id });
+  b.send({ t: "sub", session: session.id });
+  await a.next((m) => m.t === "snapshot");
+  await b.next((m) => m.t === "snapshot");
+  a.send({ t: "input", session: session.id, data: "stty size\r" });
+  await until(() => a.output(session.id).includes("24 80") && b.output(session.id).includes("24 80"), "the size before");
+
+  a.send({ t: "resize", session: session.id, cols: 132, rows: 40 });
+  for (const tab of [a, b]) {
+    await tab.next((m) => m.t === "session" && m.session.id === session.id && m.session.cols === 132 && m.session.rows === 40);
+    const { snapshot } = await tab.next<{ t: "snapshot"; snapshot: Snapshot }>((m) => m.t === "snapshot");
+    expect([snapshot.cols, snapshot.rows]).toEqual([132, 40]);
+  }
+  // The stream after each snapshot continues without a gap (Tab throws on one), and the
+  // program was told about the new size.
+  a.send({ t: "input", session: session.id, data: "stty size\r" });
+  await until(() => a.output(session.id).includes("40 132") && b.output(session.id).includes("40 132"), "the size after");
+
+  a.send({ t: "close", session: session.id });
+  await a.next((m) => m.t === "removed" && m.session === session.id);
+  a.close();
+  b.close();
+}, 20_000);
+
 test("sessions survive a server restart", async () => {
   const before = await Tab.open();
   before.send({ t: "create", cols: 100, rows: 30, cmd: "echo survivor-$((40+2))" });

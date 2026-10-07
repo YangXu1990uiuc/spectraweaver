@@ -136,10 +136,11 @@ Company home directories are often small and shared over NFS by several hosts, s
 - **Framing.** Frames on the Unix socket are `u32 length | u8 kind | payload`.
   - Kind 1 is a JSON control message.
   - Kind 2 is output: session id, u64 stream offset, raw bytes.
-- **Handshake:** `{"hello": {"protocol": 1, "daemonVersion": "…"}}`.
+- **Handshake:** `{"hello": {"protocol": 1, "daemonVersion": "…"}}`. The reply names the requests the daemon answers beyond protocol 1's first set (`features`, e.g. `["resize"]`), so a newer server or CLI can tell an older daemon what it needs; an unknown request is answered with an error rather than ignored.
 - **Requests:**
   - `list`
   - `create {cmd?, cwd, env, cols, rows}`
+  - `resize {id, cols, rows}` (§4.3)
   - `input {id, bytes}`
   - `signal {id, sig}`
   - `kill {id}`
@@ -150,7 +151,7 @@ Company home directories are often small and shared over NFS by several hosts, s
   - If `fromOffset` is still inside the ring buffer, the daemon replays the missing bytes.
   - Otherwise it sends a snapshot `{offset, cols, rows, data}`, followed by live output from `offset`.
 - **Events:**
-  - `created`, `exited {code, signal}`
+  - `created`, `exited {code, signal}`, `resized {cols, rows}`
   - `title {text}`, `bell`, `notify {kind: "osc9" | "osc777", text}`
   - `cwd {path}` (from OSC 7)
 
@@ -165,7 +166,7 @@ Company home directories are often small and shared over NFS by several hosts, s
 
 ### 4.1 The invariant
 
-A session's size (cols × rows) is chosen when the session is created, and never changes implicitly.
+A session's size (cols × rows) is chosen when the session is created and changes only when the user resizes it on purpose (§4.3). It never changes implicitly.
 
 Nothing a viewer does sends a resize to the PTY:
 - attaching or focusing;
@@ -197,7 +198,9 @@ Nothing a viewer does sends a resize to the PTY:
   - Cells are modelled the way xterm.js's WebGL renderer draws them: glyph advance and line height scale with the font size, then snap to whole device pixels (width down, height up). Ignoring the snapping overestimates the width by up to a pixel per column.
   - A live hint shows the resulting text size and how much of the tile the terminal fills.
 - **Why shape matters.** A cell is about 1:2, so a terminal's aspect ratio is about `cols ÷ (2 × rows)`. On a 16:9 screen, a 2 × 4 grid (2 rows of 4) has tiles of aspect about 0.89: 100×56 fills such a tile, while 120×36 leaves about 47% of it blank.
-- **No resizing in the MVP.** An existing session cannot be resized. A later version may add an explicit "Resize session…" action with a warning about inline TUIs.
+- **Resizing is explicit, and works like a window.** Dragging the terminal's right edge, bottom edge or corner in its tile resizes the session in whole cells at the text size shown, never beyond the tile (the tile is the terminal's screen; zoom out first for more cells at smaller text), with the new grid outlined during the drag; a double-click on the corner fills the tile, and the size in the tile's header opens a dialog for exact numbers, which carries the warning about inline TUIs.
+  - The size belongs to the session, so every browser follows. The daemon resizes the PTY (SIGWINCH) and its engine at one point of the output stream and emits `resized` there; the server then sends every viewer a fresh snapshot, taking each out of the output fan first, so no viewer parses output meant for the new grid with the old one.
+  - The tile that asked keeps its text size exactly: its zoom becomes the fraction of the new fill font that reproduces the old text size (Ctrl + / − then step to the next fixed percentage from there); other viewers keep their zoom and only refit the font.
 - **Programs cannot resize either.** xterm.js `windowOptions` stay disabled (the default), so XTWINOPS resize requests are ignored.
 
 ### 4.4 Rendering a session into a tile
@@ -206,7 +209,7 @@ Nothing a viewer does sends a resize to the PTY:
   - Compute it from the font's cell metrics: width is about 0.6 em, and height comes from the line height.
   - Check the result against xterm's actual cell size.
 - **Zoom.** Per-tile zoom is a percentage of `fitFont`.
-  - 100% is both the default and the maximum; it fills the tile.
+  - 100% is both the default and the maximum; it fills the tile. Ctrl + / − step through fixed percentages; a resize that keeps the text size (§4.3) can leave a tile between two steps.
   - Below 100%, the rest of the tile stays blank. The terminal is anchored top-left.
   - Zoom never exceeds 100%, so no row or column is ever cropped, including the bottom row where agents draw their input box.
 - **Controls.** These act on the focused tile, and the UI consumes the keys (they are not sent to the terminal):
@@ -619,7 +622,7 @@ spectraweaver token [--rotate]
   - Done: multiple sessions; grid and focus views; banners; size invariant with zoom; per-OS keymaps; token and password auth; Origin/Host checks; single-binary builds.
   - To do: raw logs, `attach`, systemd units.
 - **M2, agent awareness.** Status engine, hook installers, notifications, automatic subtitles, revival.
-- **M3, layouts.** Done: tabs with per-tab grids and URLs, moving sessions between tabs. To do: filmstrip, reordering tiles, PWA.
+- **M3, layouts.** Done: tabs with per-tab grids and URLs, moving sessions between tabs, resizing a session. To do: filmstrip, reordering tiles, PWA.
 - **M4, release.** Compatibility test suite, CI release pipeline for every target, docs.
 - **Later:**
   - History viewer and search.

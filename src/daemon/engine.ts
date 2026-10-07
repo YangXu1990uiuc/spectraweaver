@@ -68,6 +68,11 @@ export class Engine {
     this.term.write(data, callback);
   }
 
+  /** Changes the grid. Call it from a write callback, so it lands at a known point of the stream. */
+  resize(cols: number, rows: number): void {
+    this.term.resize(cols, rows);
+  }
+
   get sendFocusMode(): boolean {
     return this.term.modes.sendFocusMode;
   }
