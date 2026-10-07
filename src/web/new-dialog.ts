@@ -34,6 +34,8 @@ export function createNewTerminalDialog(context: NewTerminalContext): {
 } {
   const cols = el("input", { type: "number", min: "20", max: String(MAX_COLS), step: "1", class: "size-input", "aria-label": "columns" });
   const rows = el("input", { type: "number", min: "5", max: String(MAX_ROWS), step: "1", class: "size-input", "aria-label": "rows" });
+  // A text size describes the same choice as columns x rows in one tile; editing either sets the other.
+  const text = el("input", { type: "number", min: "4", max: "72", step: "0.25", class: "size-input", "aria-label": "text size in pixels" });
   const recommend = el("button", { type: "button", class: "link-btn" });
   const hint = el("p", { class: "hint" });
   const cwd = el("input", { placeholder: "~ (home)", spellcheck: "false" });
@@ -43,8 +45,12 @@ export function createNewTerminalDialog(context: NewTerminalContext): {
   const form = el("form", { method: "dialog" }, [
     el("h2", {}, ["New terminal"]),
     el("div", { class: "field" }, [
-      el("span", {}, ["Size in columns × rows (fixed for the life of the terminal)"]),
+      el("span", {}, ["Size in columns × rows (changed later by resizing the terminal)"]),
       el("div", { class: "size-row" }, [cols, el("span", {}, ["×"]), rows, recommend]),
+    ]),
+    el("div", { class: "field" }, [
+      el("span", {}, ["Text size, in pixels, in one tile of the current grid"]),
+      el("div", { class: "size-row" }, [text, el("span", {}, ["px"])]),
       hint,
     ]),
     el("label", { class: "field" }, ["Working directory", cwd]),
@@ -68,28 +74,42 @@ export function createNewTerminalDialog(context: NewTerminalContext): {
       ? [c, r]
       : null;
   };
+  const textSize = (): number | null => {
+    const px = Number(text.value);
+    return Number.isFinite(px) && px >= 4 && px <= 72 ? px : null;
+  };
   const updateHint = () => {
     const chosen = size();
     if (!chosen || tile.area.width < 10 || tile.area.height < 10) {
       hint.textContent = "";
       return;
     }
-    const px = fitTextPx(tile.area, chosen[0], chosen[1], font);
     const covered = coverage(tile.area, chosen[0], chosen[1], font);
     const percent = (fraction: number) => `${Math.round(fraction * 100)}%`;
-    hint.textContent =
-      `≈ ${px.toFixed(1)} px text in one tile of the ${formatGrid(tile.grid)} grid · ` +
-      `fills ${percent(covered.width)} of its width and ${percent(covered.height)} of its height`;
+    hint.textContent = `Fills ${percent(covered.width)} of a ${formatGrid(tile.grid)} tile's width and ${percent(covered.height)} of its height.`;
   };
-  const fillRecommended = () => {
-    const recommended = recommendSize(tile.area, font, preferredTextPx());
-    cols.value = String(recommended.cols);
-    rows.value = String(recommended.rows);
+  const fromCells = () => {
+    const chosen = size();
+    if (chosen && tile.area.width >= 10 && tile.area.height >= 10) text.value = fitTextPx(tile.area, chosen[0], chosen[1], font).toFixed(2);
     updateHint();
   };
+  const fromText = () => {
+    const px = textSize();
+    if (px) {
+      const recommended = recommendSize(tile.area, font, px);
+      cols.value = String(recommended.cols);
+      rows.value = String(recommended.rows);
+    }
+    updateHint();
+  };
+  const fillRecommended = () => {
+    text.value = preferredTextPx().toFixed(2);
+    fromText();
+  };
 
-  cols.addEventListener("input", updateHint);
-  rows.addEventListener("input", updateHint);
+  cols.addEventListener("input", fromCells);
+  rows.addEventListener("input", fromCells);
+  text.addEventListener("input", fromText);
   recommend.addEventListener("click", fillRecommended);
   cancel.addEventListener("click", () => dialog.close());
   form.addEventListener("submit", (event) => {
@@ -102,7 +122,7 @@ export function createNewTerminalDialog(context: NewTerminalContext): {
     // Remember the text size this choice implies, so the next recommendation matches it
     // even in a different layout.
     if (tile.area.width >= 10 && tile.area.height >= 10) {
-      const px = fitTextPx(tile.area, chosen[0], chosen[1], font);
+      const px = textSize() ?? fitTextPx(tile.area, chosen[0], chosen[1], font);
       saveSetting("textPx", String(Math.min(MAX_TEXT_PX, Math.max(MIN_TEXT_PX, px)).toFixed(2)));
     }
     saveSetting("cwd", cwd.value.trim());
@@ -125,8 +145,8 @@ export function createNewTerminalDialog(context: NewTerminalContext): {
       cmd.value = "";
       error.textContent = "";
       dialog.showModal();
-      cols.focus();
-      cols.select();
+      text.focus();
+      text.select();
     },
   };
 }

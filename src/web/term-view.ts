@@ -13,7 +13,7 @@ import { installKeymap, type Platform } from "./keymap.ts";
 import { suppressQueryReplies } from "./queries.ts";
 import type { ResizeTarget } from "./resize-dialog.ts";
 import { type ResizeGeometry, ResizeHandles } from "./resize.ts";
-import { type Area, cellAt, cellsThatFit, type FontMetrics, zoomKeepingText } from "./sizing.ts";
+import { type Area, cellAt, cellsThatFit, type FontMetrics, measureFont, zoomKeepingText } from "./sizing.ts";
 import { SNAP_SLACK_PX } from "./windows.ts";
 
 /**
@@ -199,8 +199,8 @@ export class TermView {
       const pending = this.pendingResize;
       this.pendingResize = null;
       const ours = pending && pending.cols === snapshot.cols && pending.rows === snapshot.rows;
-      if (ours && Date.now() - pending.at < PENDING_RESIZE_MS) this.keepTextSize(pending.textPx, snapshot.cols, snapshot.rows);
       this.term.resize(snapshot.cols, snapshot.rows);
+      if (ours && Date.now() - pending.at < PENDING_RESIZE_MS) this.keepTextSize(pending.textPx);
       this.scheduleFit();
     }
     this.term.reset();
@@ -303,9 +303,9 @@ export class TermView {
       cols: geometry.cols,
       rows: geometry.rows,
       area: geometry.area,
-      font: this.fontAsDrawn(geometry),
-      fill: cellsThatFit(geometry.area, geometry.cell),
-      commit: (cols, rows) => this.requestResize(cols, rows),
+      font: trueFont(),
+      textPx: this.term.options.fontSize ?? BASE_FONT_SIZE,
+      commit: (cols, rows, textPx) => this.requestResize(cols, rows, textPx),
     };
   }
 
@@ -353,8 +353,8 @@ export class TermView {
     const geometry = this.geometry();
     if (!geometry) return false;
     const textPx = this.term.options.fontSize ?? BASE_FONT_SIZE;
-    const font = this.fontAsDrawn(geometry);
     const room = { width: geometry.area.width - SNAP_SLACK_PX, height: geometry.area.height - SNAP_SLACK_PX };
+    const font = trueFont();
     // Cells snap to device pixels, so at small sizes a step may not change the cell: step on until it does.
     for (let target = textPx + TEXT_STEP_PX; target <= MAX_FONT_SIZE; target += TEXT_STEP_PX) {
       const { cols, rows } = cellsThatFit(room, cellAt(font, target));
@@ -385,29 +385,51 @@ export class TermView {
     // the snapshot fits once it has applied the new grid.
     const pending = this.pendingResize;
     if (pending && Date.now() - pending.at < PENDING_RESIZE_MS) return false;
+    const measured = this.measureFill();
+    if (!measured) return false;
+    const start = this.term.options.fontSize ?? BASE_FONT_SIZE;
+    // The epsilon keeps a zoom chosen as textPx / fill (keepTextSize) from landing a step short.
+    const size = clampFont(Math.floor(measured.fill * this.zoom * 4 + 1e-6) / 4);
+    this.term.options.fontSize = size;
+    this.handles?.layout();
+    return size !== start;
+  }
+
+  /**
+   * The largest font, in quarter pixels, at which the grid fits the tile: measured by trying
+   * font sizes on the terminal, not modelled. The renderer snaps cells to whole device pixels,
+   * so the screen is a step function of the font size that a linear estimate can miss by a step
+   * (and iterating one can oscillate around); cells never shrink as the font grows, so the
+   * answer is found by search, starting around the linear guess. Leaves the terminal at some
+   * probed size: the caller sets the one it wants. Null while the tile cannot be measured.
+   */
+  private measureFill(): { fill: number; width: number; height: number } | null {
     const width = this.element.clientWidth;
     const height = this.element.clientHeight;
     const screen = this.term.element?.querySelector<HTMLElement>(".xterm-screen");
-    if (!screen || width < 10 || height < 10) return false;
-    const zoom = this.zoom;
-    const start = this.term.options.fontSize ?? BASE_FONT_SIZE;
-    let size = start;
-    for (let i = 0; i < 6; i++) {
-      const w = screen.offsetWidth;
-      const h = screen.offsetHeight;
-      if (!w || !h) break;
-      const target = clampFont(Math.floor(size * Math.min(width / w, height / h) * zoom * 4) / 4);
-      if (Math.abs(target - size) < 0.25) break;
-      size = target;
-      this.term.options.fontSize = size;
+    if (!screen || width < 10 || height < 10 || !screen.offsetWidth || !screen.offsetHeight) return null;
+    const fits = (quarters: number) => {
+      this.term.options.fontSize = quarters / 4;
+      return screen.offsetWidth <= width && screen.offsetHeight <= height;
+    };
+    const current = this.term.options.fontSize ?? BASE_FONT_SIZE;
+    const guess = clampFont(current * Math.min(width / screen.offsetWidth, height / screen.offsetHeight));
+    let low = Math.max(MIN_FONT_SIZE * 4, Math.floor(guess * 3)); // three quarters of the guess
+    let high = Math.min(MAX_FONT_SIZE * 4, Math.ceil(guess * 5)); // and five quarters, in quarter pixels
+    if (!fits(low)) {
+      high = low - 1;
+      low = MIN_FONT_SIZE * 4;
+      if (!fits(low)) return { fill: MIN_FONT_SIZE, width, height }; // even the smallest font overflows
+    } else if (fits(high)) {
+      low = high;
+      high = MAX_FONT_SIZE * 4;
     }
-    // Cell sizes round to device pixels, so the linear estimate can overshoot slightly.
-    while (size > MIN_FONT_SIZE && (screen.offsetWidth > width || screen.offsetHeight > height)) {
-      size -= 0.25;
-      this.term.options.fontSize = size;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (fits(mid)) low = mid;
+      else high = mid - 1;
     }
-    this.handles?.layout();
-    return size !== start;
+    return { fill: low / 4, width, height };
   }
 
   /** The terminal as drawn now: grid, cell and screen size, and the tile area it may fill. */
@@ -425,31 +447,15 @@ export class TermView {
     };
   }
 
-  /** The font's cell shape from the cells xterm.js draws, rather than from a probe of the font. */
-  private fontAsDrawn(geometry: ResizeGeometry): FontMetrics {
-    const textPx = this.term.options.fontSize ?? BASE_FONT_SIZE;
-    return {
-      widthRatio: geometry.cell.width / textPx,
-      heightRatio: geometry.cell.height / textPx,
-      devicePixelRatio: window.devicePixelRatio || 1,
-    };
-  }
-
   /**
-   * Sets the zoom at which the new grid shows text of size `textPx` in this tile. The fill font
-   * is reckoned the way fit() reckons it, by scaling the font as drawn by how far cols x rows of
-   * the cell as drawn are from filling the tile, in fit()'s quarter-pixel steps; a model of the
-   * renderer's cell (fitTextPx) disagreed with fit() by a step on some displays, and the text
-   * shrank by that step at every resize.
+   * Sets the zoom at which the grid the terminal has now shows text of size `textPx` in this
+   * tile: the fraction of the measured fill font that gives it. Text larger than the fill
+   * (a size the dialog or Ctrl + asked for that does not quite fit) gets the fill.
    */
-  private keepTextSize(textPx: number, cols: number, rows: number): void {
-    const geometry = this.geometry();
-    if (!geometry) return;
-    const current = this.term.options.fontSize ?? BASE_FONT_SIZE;
-    const { area, cell } = geometry;
-    const fillPx = Math.floor(current * Math.min(area.width / (cols * cell.width), area.height / (rows * cell.height)) * 4) / 4;
-    // A window sized for this text (plus its slack) fills within a step: 100%, and fit() lands on textPx.
-    this.zoom = fillPx - textPx <= 0.25 ? 1 : zoomKeepingText(fillPx, textPx, MIN_ZOOM);
+  private keepTextSize(textPx: number): void {
+    const measured = this.measureFill();
+    if (!measured) return;
+    this.zoom = zoomKeepingText(measured.fill, textPx, MIN_ZOOM);
     saveZoom(this.sessionId, this.zoom);
   }
 
@@ -495,6 +501,17 @@ export class TermView {
       .then((text) => this.term.paste(sanitizePaste(text)))
       .catch(() => {});
   }
+}
+
+/**
+ * The terminal font's cell shape, measured from the font itself (not from the cells as drawn,
+ * which at small sizes are snapped so coarsely that scaling them misleads by a cell or more).
+ * Measured again when the device pixel ratio changes (the browser was zoomed).
+ */
+let trueFontCache: FontMetrics | null = null;
+function trueFont(): FontMetrics {
+  if (!trueFontCache || trueFontCache.devicePixelRatio !== (window.devicePixelRatio || 1)) trueFontCache = measureFont(FONT_FAMILY);
+  return trueFontCache;
 }
 
 export function sanitizePaste(text: string): string {
