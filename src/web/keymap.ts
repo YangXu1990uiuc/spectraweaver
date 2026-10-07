@@ -15,7 +15,7 @@ export function detectPlatform(): Platform {
 }
 
 export interface KeymapActions {
-  /** 1 zooms in, -1 zooms out, 0 resets to fill the tile. */
+  /** 1 zooms in (past filling the tile, the text grows and the terminal gives up cells), -1 zooms out, 0 resets to fill the tile. */
   zoom(direction: 1 | -1 | 0): void;
   send(data: string): void;
 }

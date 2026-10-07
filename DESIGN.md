@@ -213,6 +213,7 @@ Dragging a window's edge is the explicit resize of §4.3, not a viewing action: 
   - Check the result against xterm's actual cell size.
 - **Zoom.** Per-tile zoom is a percentage of `fitFont`.
   - 100% is both the default and the maximum; it fills the tile. Ctrl + / − step through fixed percentages; a resize that keeps the text size (§4.3) can leave a tile between two steps.
+  - At 100%, Ctrl + goes on by resizing the session (§4.3) to the most cells that fit at a text size one pixel larger, which the snapshot then shows at that size. Beyond this point larger text and a smaller terminal are the same thing, as in a desktop terminal; the resize is explicit, so the invariant of §4.1 holds.
   - Below 100%, the rest of the tile stays blank. The terminal is anchored top-left.
   - Zoom never exceeds 100%, so no row or column is ever cropped, including the bottom row where agents draw their input box.
 - **Controls.** These act on the focused tile, and the UI consumes the keys (they are not sent to the terminal):

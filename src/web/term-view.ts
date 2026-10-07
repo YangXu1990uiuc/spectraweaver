@@ -13,7 +13,8 @@ import { installKeymap, type Platform } from "./keymap.ts";
 import { suppressQueryReplies } from "./queries.ts";
 import type { ResizeTarget } from "./resize-dialog.ts";
 import { type ResizeGeometry, ResizeHandles } from "./resize.ts";
-import { type Area, cellsThatFit, type FontMetrics, zoomKeepingText } from "./sizing.ts";
+import { type Area, cellAt, cellsThatFit, type FontMetrics, zoomKeepingText } from "./sizing.ts";
+import { SNAP_SLACK_PX } from "./windows.ts";
 
 /**
  * Zoom is a fraction of the font size that exactly fills the tile; 1 is the maximum. Ctrl + / -
@@ -24,6 +25,8 @@ const MIN_ZOOM = ZOOM_STEPS[ZOOM_STEPS.length - 1]!;
 const BASE_FONT_SIZE = 14;
 const MIN_FONT_SIZE = 3;
 const MAX_FONT_SIZE = 72;
+/** How much larger Ctrl + = makes the text once it fills the tile, in CSS px per press. */
+const TEXT_STEP_PX = 1;
 /** A resize this tile asked for is forgotten after this long without the snapshot that applies it. */
 const PENDING_RESIZE_MS = 10_000;
 export const FONT_FAMILY =
@@ -256,19 +259,22 @@ export class TermView {
     this.term.refresh(0, this.term.rows - 1);
   }
 
-  /** Whether the edges can be dragged: the daemon must know how, and the program must be running. */
-  setResizable(enabled: boolean): void {
-    this.resizable = enabled;
-    this.handles?.setEnabled(enabled);
+  /**
+   * Whether the terminal can be resized (the daemon must know how, and the program must be
+   * running), and whether its own edges are the handles for it (not in a window, whose edges
+   * resize window and terminal together).
+   */
+  setResizable(resizable: boolean, handles = resizable): void {
+    this.resizable = resizable;
+    this.handles?.setEnabled(resizable && handles);
   }
 
   /**
    * Asks the daemon for a new size; the snapshot that follows applies it (applySnapshot). The
    * size belongs to the session, so every browser follows.
    */
-  requestResize(cols: number, rows: number): void {
+  requestResize(cols: number, rows: number, textPx = this.term.options.fontSize ?? BASE_FONT_SIZE): void {
     if (cols === this.term.cols && rows === this.term.rows) return;
-    const textPx = this.term.options.fontSize ?? BASE_FONT_SIZE;
     this.pendingResize = { cols, rows, textPx, at: Date.now() };
     this.options.send({ t: "resize", session: this.sessionId, cols, rows });
     // Should no snapshot come (the daemon refused), fit the tile as it is once the request expires.
@@ -322,13 +328,41 @@ export class TermView {
     this.options.onFocusChange(focused);
   }
 
-  /** Ctrl + / - / 0: to the next step above or below the current zoom, or back to filling the tile. */
+  /**
+   * Ctrl + / - / 0: to the next step above or below the current zoom, or back to filling the
+   * tile. At 100% the text already fills the tile, so Ctrl + goes on by making the text larger
+   * and the terminal smaller (growText), as a desktop terminal does.
+   */
   private zoomStep(direction: 1 | -1 | 0): void {
+    if (direction > 0 && this.zoom >= 1 - 1e-6 && this.growText()) return;
     if (direction === 0) this.zoom = 1;
     else if (direction > 0) this.zoom = ZOOM_STEPS.filter((step) => step > this.zoom + 1e-6).at(-1) ?? this.zoom;
     else this.zoom = ZOOM_STEPS.find((step) => step < this.zoom - 1e-6) ?? this.zoom;
     saveZoom(this.sessionId, this.zoom);
     this.scheduleFit();
+  }
+
+  /**
+   * Larger text in the same tile: asks for the most whole cells that fit at TEXT_STEP_PX more,
+   * which the snapshot then shows at that size (applySnapshot). An explicit resize, like a drag
+   * of the edges: the program is told and redraws. False if the terminal cannot be resized, or
+   * the text is as large as it gets.
+   */
+  private growText(): boolean {
+    if (!this.resizable) return false;
+    const geometry = this.geometry();
+    if (!geometry) return false;
+    const textPx = this.term.options.fontSize ?? BASE_FONT_SIZE;
+    const font = this.fontAsDrawn(geometry);
+    const room = { width: geometry.area.width - SNAP_SLACK_PX, height: geometry.area.height - SNAP_SLACK_PX };
+    // Cells snap to device pixels, so at small sizes a step may not change the cell: step on until it does.
+    for (let target = textPx + TEXT_STEP_PX; target <= MAX_FONT_SIZE; target += TEXT_STEP_PX) {
+      const { cols, rows } = cellsThatFit(room, cellAt(font, target));
+      if (cols === this.term.cols && rows === this.term.rows) continue;
+      this.requestResize(cols, rows, Math.floor(target * 4) / 4);
+      return true;
+    }
+    return false;
   }
 
   private scheduleFit(): void {

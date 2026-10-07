@@ -435,7 +435,7 @@ class Tile {
       notify: toast,
     });
     this.view.mount(this.body);
-    this.view.setResizable(this.resizable() && this.frame === null);
+    this.view.setResizable(this.resizable(), this.frame === null);
     send({ t: "sub", session: this.session.id });
   }
 
@@ -465,7 +465,7 @@ class Tile {
     }
     this.root.classList.toggle("window", frame !== null);
     this.chrome.setEnabled(frame !== null);
-    this.view?.setResizable(this.resizable() && frame === null);
+    this.view?.setResizable(this.resizable(), frame === null);
   }
 
   update(session: SessionView): void {
@@ -486,7 +486,7 @@ class Tile {
           ? "Columns × rows."
           : "Columns × rows. Resizing needs a restarted daemon: spectraweaver down --all (every session ends), then spectraweaver up."
     }\n${session.cwd}`;
-    this.view?.setResizable(resizable && this.frame === null);
+    this.view?.setResizable(resizable, this.frame === null);
     const exited = session.exited;
     this.exitBadge.hidden = !exited;
     if (exited) this.exitBadge.textContent = exited.signal ? `exited (${exited.signal})` : `exited ${exited.code ?? ""}`;
