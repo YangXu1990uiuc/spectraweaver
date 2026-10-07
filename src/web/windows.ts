@@ -27,6 +27,14 @@ export interface Rect {
 export const MIN_WINDOW: Area = { width: 180, height: 90 };
 /** A press on the header that travels less than this is a click, not a drag. */
 export const DRAG_THRESHOLD_PX = 4;
+/**
+ * Room a snapped window leaves after its whole cells, in CSS px. The frame is stored as a
+ * fraction and laid out as a percentage, and the browser reports sizes in whole pixels, so a
+ * window sized to exactly its cells can come out a fraction of a pixel short; the fit would then
+ * shrink the font a step, and the next drag would start from the smaller cell. Two pixels cover
+ * every rounding on the way.
+ */
+export const SNAP_SLACK_PX = 2;
 /** Windows that find no free cell cascade from the top-left by this fraction per step. */
 const CASCADE_STEP = 0.03;
 
@@ -130,7 +138,7 @@ export interface Resized {
 export function resizeRect(start: Rect, travel: { dx: number; dy: number }, edges: Edges, limits: ResizeLimits): Resized {
   const { workspace, chrome, cell, current } = limits;
   const x = resizeAxis(start.left, start.width, travel.dx, edges.left, edges.right, {
-    min: Math.max(MIN_WINDOW.width, chrome.width + (cell ? SIZE_LIMITS.minCols * cell.width : 0)),
+    min: Math.max(MIN_WINDOW.width, chrome.width + (cell ? SIZE_LIMITS.minCols * cell.width + SNAP_SLACK_PX : 0)),
     extent: workspace.width,
     chrome: chrome.width,
     cell: cell?.width ?? null,
@@ -138,7 +146,7 @@ export function resizeRect(start: Rect, travel: { dx: number; dy: number }, edge
     maxCells: SIZE_LIMITS.maxCols,
   });
   const y = resizeAxis(start.top, start.height, travel.dy, edges.top, edges.bottom, {
-    min: Math.max(MIN_WINDOW.height, chrome.height + (cell ? SIZE_LIMITS.minRows * cell.height : 0)),
+    min: Math.max(MIN_WINDOW.height, chrome.height + (cell ? SIZE_LIMITS.minRows * cell.height + SNAP_SLACK_PX : 0)),
     extent: workspace.height,
     chrome: chrome.height,
     cell: cell?.height ?? null,
@@ -177,10 +185,13 @@ function resizeAxis(
   if (highMoves) high = Math.min(limits.extent, Math.max(high + delta, low + limits.min));
   let cells: number | null = null;
   if (limits.cell !== null) {
-    cells = clamp(Math.floor((high - low - limits.chrome) / limits.cell), limits.minCells, limits.maxCells);
+    // The cells that fit beside the chrome and the slack; the epsilon keeps a window that was
+    // snapped before from losing a cell to floating point when it is dragged by nothing.
+    const room = (high - low - limits.chrome - SNAP_SLACK_PX) / limits.cell;
+    cells = clamp(Math.floor(room + 1e-6), limits.minCells, limits.maxCells);
     // Rounding down must not take the window below its minimum: one more cell then.
-    if (limits.chrome + cells * limits.cell < limits.min && cells < limits.maxCells) cells++;
-    const snapped = limits.chrome + cells * limits.cell;
+    if (limits.chrome + cells * limits.cell + SNAP_SLACK_PX < limits.min && cells < limits.maxCells) cells++;
+    const snapped = limits.chrome + cells * limits.cell + SNAP_SLACK_PX;
     if (snapped <= limits.extent) {
       if (lowMoves) low = high - snapped;
       else high = low + snapped;

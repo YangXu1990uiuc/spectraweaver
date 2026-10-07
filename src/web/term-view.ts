@@ -13,7 +13,7 @@ import { installKeymap, type Platform } from "./keymap.ts";
 import { suppressQueryReplies } from "./queries.ts";
 import type { ResizeTarget } from "./resize-dialog.ts";
 import { type ResizeGeometry, ResizeHandles } from "./resize.ts";
-import { type Area, cellsThatFit, type FontMetrics, fitTextPx, zoomKeepingText } from "./sizing.ts";
+import { type Area, cellsThatFit, type FontMetrics, zoomKeepingText } from "./sizing.ts";
 
 /**
  * Zoom is a fraction of the font size that exactly fills the tile; 1 is the maximum. Ctrl + / -
@@ -271,6 +271,8 @@ export class TermView {
     const textPx = this.term.options.fontSize ?? BASE_FONT_SIZE;
     this.pendingResize = { cols, rows, textPx, at: Date.now() };
     this.options.send({ t: "resize", session: this.sessionId, cols, rows });
+    // Should no snapshot come (the daemon refused), fit the tile as it is once the request expires.
+    setTimeout(() => this.scheduleFit(), PENDING_RESIZE_MS + 100);
   }
 
   /** One cell as drawn now, in CSS px; null while the terminal cannot be measured. */
@@ -343,6 +345,12 @@ export class TermView {
    * scaled by the zoom step. Returns true if the font size changed.
    */
   private fit(): boolean {
+    // While a resize this tile asked for is in flight, its window may already have the new size
+    // (a drag of the window's edge resizes both) but the terminal still has the old grid. Fitting
+    // that grid into the new window would move the font the snapshot's resize is meant to keep;
+    // the snapshot fits once it has applied the new grid.
+    const pending = this.pendingResize;
+    if (pending && Date.now() - pending.at < PENDING_RESIZE_MS) return false;
     const width = this.element.clientWidth;
     const height = this.element.clientHeight;
     const screen = this.term.element?.querySelector<HTMLElement>(".xterm-screen");
@@ -393,12 +401,21 @@ export class TermView {
     };
   }
 
-  /** Sets the zoom at which the new grid shows text of size `textPx` in this tile, as now. */
+  /**
+   * Sets the zoom at which the new grid shows text of size `textPx` in this tile. The fill font
+   * is reckoned the way fit() reckons it, by scaling the font as drawn by how far cols x rows of
+   * the cell as drawn are from filling the tile, in fit()'s quarter-pixel steps; a model of the
+   * renderer's cell (fitTextPx) disagreed with fit() by a step on some displays, and the text
+   * shrank by that step at every resize.
+   */
   private keepTextSize(textPx: number, cols: number, rows: number): void {
     const geometry = this.geometry();
     if (!geometry) return;
-    const fillPx = fitTextPx(geometry.area, cols, rows, this.fontAsDrawn(geometry));
-    this.zoom = zoomKeepingText(fillPx, textPx, MIN_ZOOM);
+    const current = this.term.options.fontSize ?? BASE_FONT_SIZE;
+    const { area, cell } = geometry;
+    const fillPx = Math.floor(current * Math.min(area.width / (cols * cell.width), area.height / (rows * cell.height)) * 4) / 4;
+    // A window sized for this text (plus its slack) fills within a step: 100%, and fit() lands on textPx.
+    this.zoom = fillPx - textPx <= 0.25 ? 1 : zoomKeepingText(fillPx, textPx, MIN_ZOOM);
     saveZoom(this.sessionId, this.zoom);
   }
 

@@ -4,7 +4,18 @@
 
 import { expect, test } from "bun:test";
 import { normalizeFrame } from "../src/common/protocol.ts";
-import { cellFrame, frameToRect, layoutOf, MIN_WINDOW, moveRect, placeWindow, rectToFrame, resizeRect, topZ } from "../src/web/windows.ts";
+import {
+  cellFrame,
+  frameToRect,
+  layoutOf,
+  MIN_WINDOW,
+  moveRect,
+  placeWindow,
+  rectToFrame,
+  resizeRect,
+  SNAP_SLACK_PX as SLACK,
+  topZ,
+} from "../src/web/windows.ts";
 
 const workspace = { width: 1600, height: 900 };
 
@@ -75,34 +86,37 @@ test("resizing by an edge keeps the opposite edge, snaps the terminal to whole c
   const start = { left: 100, top: 100, width: 2 + 80 * 8, height: 30 + 24 * 16 }; // an 80 x 24 terminal: 642 x 414
   const limits = { workspace, chrome, cell, current: { cols: 80, rows: 24 } };
   const right = { left: false, right: true, top: false, bottom: false };
-  // 83 px to the right is 10.4 cells: 10 whole cells; the rows are untouched.
+  // 83 px to the right is 10.4 cells: 10 whole cells, plus the slack; the rows are untouched.
   expect(resizeRect(start, { dx: 83, dy: 50 }, right, limits)).toEqual({
-    rect: { left: 100, top: 100, width: 2 + 90 * 8, height: 414 },
+    rect: { left: 100, top: 100, width: 2 + 90 * 8 + SLACK, height: 414 },
     cells: { cols: 90, rows: 24 },
   });
   // The left edge moves the left side and keeps the right side where it was.
   const left = { left: true, right: false, top: false, bottom: false };
   expect(resizeRect(start, { dx: -83, dy: 0 }, left, limits)).toEqual({
-    rect: { left: 100 - 80, top: 100, width: 2 + 90 * 8, height: 414 },
+    rect: { left: 742 - (2 + 90 * 8 + SLACK), top: 100, width: 2 + 90 * 8 + SLACK, height: 414 },
     cells: { cols: 90, rows: 24 },
   });
-  // A corner moves both axes: 40 px and 32 px inward are 5 columns and 2 rows fewer.
+  // A corner moves both axes: 38 px and 30 px inward are 5 columns and 2 rows fewer.
   const nw = { left: true, right: false, top: true, bottom: false };
-  expect(resizeRect(start, { dx: 40, dy: 32 }, nw, limits)).toEqual({
-    rect: { left: 140, top: 132, width: 2 + 75 * 8, height: 30 + 22 * 16 },
+  expect(resizeRect(start, { dx: 38, dy: 30 }, nw, limits)).toEqual({
+    rect: { left: 742 - (2 + 75 * 8 + SLACK), top: 514 - (30 + 22 * 16 + SLACK), width: 2 + 75 * 8 + SLACK, height: 30 + 22 * 16 + SLACK },
     cells: { cols: 75, rows: 22 },
   });
-  // Never beyond the workspace: the edge stops there and the terminal takes the cells that fit.
+  // A window snapped before, dragged by nothing, keeps its cells (floating point must not lose one).
+  const snapped = { left: 100, top: 100, width: 2 + 90 * 8 + SLACK, height: 30 + 22 * 16 + SLACK };
   const se = { left: false, right: true, top: false, bottom: true };
+  expect(resizeRect(snapped, { dx: 0, dy: 0 }, se, limits)).toEqual({ rect: snapped, cells: { cols: 90, rows: 22 } });
+  // Never beyond the workspace: the edge stops there and the terminal takes the cells that fit.
   const far = resizeRect(start, { dx: 5000, dy: 5000 }, se, limits);
   expect(far.rect.left + far.rect.width).toBeLessThanOrEqual(workspace.width);
   expect(far.rect.top + far.rect.height).toBeLessThanOrEqual(workspace.height);
-  expect(far.cells).toEqual({ cols: Math.floor((1600 - 100 - 2) / 8), rows: Math.floor((900 - 100 - 30) / 16) });
+  expect(far.cells).toEqual({ cols: Math.floor((1600 - 100 - 2 - SLACK) / 8), rows: Math.floor((900 - 100 - 30 - SLACK) / 16) });
   // Never smaller than the minimum window; the terminal keeps whole cells.
   const tiny = resizeRect(start, { dx: -5000, dy: -5000 }, se, limits);
   expect(tiny.rect.width).toBeGreaterThanOrEqual(MIN_WINDOW.width);
   expect(tiny.rect.height).toBeGreaterThanOrEqual(MIN_WINDOW.height);
-  expect(tiny.cells).toEqual({ cols: (tiny.rect.width - 2) / 8, rows: (tiny.rect.height - 30) / 16 });
+  expect(tiny.cells).toEqual({ cols: (tiny.rect.width - 2 - SLACK) / 8, rows: (tiny.rect.height - 30 - SLACK) / 16 });
   // Without a cell (an exited terminal, or a daemon that cannot resize) the window alone resizes, by the pixel.
   expect(resizeRect(start, { dx: 83, dy: 50 }, right, { ...limits, cell: null })).toEqual({
     rect: { left: 100, top: 100, width: 642 + 83, height: 414 },
