@@ -14,6 +14,9 @@ export const KIND_JSON = 1;
 export const KIND_OUTPUT = 2;
 export const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 
+/** The sizes the daemon accepts, when creating a session and when resizing one. */
+export const SIZE_LIMITS = { minCols: 2, maxCols: 1000, minRows: 1, maxRows: 500 } as const;
+
 export interface SessionInfo {
   id: string;
   cmd: string | null;
@@ -42,6 +45,8 @@ export type DaemonRequest =
   | { op: "list" }
   /** `tag` is opaque to the daemon and echoed in the "created" event (the server puts a tab id there). */
   | { op: "create"; cols: number; rows: number; cwd?: string; cmd?: string; tag?: string }
+  /** Answered with the session's SessionInfo once the engine has the new size; the "resized" event precedes it. */
+  | { op: "resize"; session: string; cols: number; rows: number }
   | { op: "input"; session: string; data: string; binary?: boolean }
   | { op: "subscribe"; session: string }
   | { op: "snapshot"; session: string }
@@ -59,7 +64,8 @@ export type DaemonEvent =
   | { type: "title"; session: string; title: string }
   | { type: "bell"; session: string }
   | { type: "notify"; session: string; kind: "osc9" | "osc777"; text: string }
-  | { type: "cwd"; session: string; cwd: string };
+  | { type: "cwd"; session: string; cwd: string }
+  | { type: "resized"; session: string; cols: number; rows: number };
 
 export type DaemonResponse =
   | { t: "res"; id: number; ok: true; result?: unknown }
@@ -71,6 +77,8 @@ export interface HelloResult {
   protocol: number;
   version: string;
   pid: number;
+  /** Requests added since protocol 1's first set that this daemon answers ("resize"); older daemons send none. */
+  features?: string[];
 }
 
 // ---- browser <-> server ----------------------------------------------------------------
@@ -83,6 +91,47 @@ export interface SessionView extends SessionInfo {
   color: string;
   /** A coding agent stopped by "Stop agents", waiting for "Resume agents". */
   stopped?: StoppedAgent;
+  /** Where its window sits while its tab lays terminals out as windows; absent until the user places it. */
+  frame?: Frame;
+}
+
+/**
+ * A terminal's window in its tab under the "windows" layout: position and size as fractions of
+ * the workspace, so every screen shows the same arrangement at its own size, and `z`, which
+ * orders overlapping windows (higher is in front).
+ */
+export interface Frame {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  z: number;
+}
+
+/** The smallest side a window may have, as a fraction of the workspace. */
+export const FRAME_MIN_SIDE = 0.02;
+const FRAME_MAX_Z = 1_000_000_000;
+
+/**
+ * Checks a frame a browser sent: finite numbers, rounded to 1/10000 (meta.json stays short),
+ * each side at least FRAME_MIN_SIDE, and inside the workspace (a window dragged over an edge is
+ * pulled back). Null if it is not a frame at all.
+ */
+export function normalizeFrame(input: unknown): Frame | null {
+  if (typeof input !== "object" || input === null) return null;
+  const { x, y, w, h, z } = input as Record<string, unknown>;
+  const numbers = [x, y, w, h, z];
+  if (!numbers.every((value) => typeof value === "number" && Number.isFinite(value))) return null;
+  const round = (value: number) => Math.round(value * 10_000) / 10_000;
+  const width = Math.min(1, Math.max(FRAME_MIN_SIDE, round(w as number)));
+  const height = Math.min(1, Math.max(FRAME_MIN_SIDE, round(h as number)));
+  return {
+    x: round(Math.min(1 - width, Math.max(0, round(x as number)))),
+    y: round(Math.min(1 - height, Math.max(0, round(y as number)))),
+    w: width,
+    h: height,
+    z: Math.min(FRAME_MAX_Z, Math.max(0, Math.round(z as number))),
+  };
 }
 
 export interface StoppedAgent {
@@ -98,6 +147,18 @@ export interface TabView {
   color: string;
   /** Tiles per screen in matrix order, "rowsxcols": "2x3" is 2 rows of 3 tiles. */
   grid: string;
+  /**
+   * How the tab arranges its terminals: windows the user moves and resizes (the default, and what
+   * a tab from before this field means), or a grid of equal tiles. The grid sizes new windows too.
+   */
+  layout?: TabLayout;
+}
+
+export const TAB_LAYOUTS = ["grid", "windows"] as const;
+export type TabLayout = (typeof TAB_LAYOUTS)[number];
+
+export function isTabLayout(value: unknown): value is TabLayout {
+  return (TAB_LAYOUTS as readonly unknown[]).includes(value);
 }
 
 export const TAB_COLORS = [
@@ -127,10 +188,13 @@ export type ClientMessage =
   | { t: "focus"; session: string; focused: boolean }
   | { t: "create"; cols: number; rows: number; cwd?: string; cmd?: string; tab?: string }
   | { t: "close"; session: string }
+  | { t: "resize"; session: string; cols: number; rows: number }
   | { t: "banner"; session: string; banner: string }
   | { t: "session-move"; session: string; tab: string }
-  | { t: "tab-create"; id: string; name: string; color: string; grid: string }
-  | { t: "tab-update"; id: string; name?: string; color?: string; grid?: string }
+  /** Places or restacks a terminal's window; the server checks it with normalizeFrame. */
+  | { t: "session-frame"; session: string; frame: Frame }
+  | { t: "tab-create"; id: string; name: string; color: string; grid: string; layout?: TabLayout }
+  | { t: "tab-update"; id: string; name?: string; color?: string; grid?: string; layout?: TabLayout }
   | { t: "tab-delete"; id: string }
   | { t: "tab-move"; id: string; index: number }
   | { t: "agents-stop" }
@@ -138,7 +202,7 @@ export type ClientMessage =
 
 export type ServerMessage =
   | { t: "hello"; version: string }
-  | { t: "daemon"; up: boolean }
+  | { t: "daemon"; up: boolean; features?: string[] }
   | { t: "tabs"; tabs: TabView[] }
   | { t: "sessions"; sessions: SessionView[] }
   | { t: "session"; session: SessionView }

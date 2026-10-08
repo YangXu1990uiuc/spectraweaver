@@ -166,6 +166,39 @@ test("two tabs mirror one session, a new tab restores it, banners sync", async (
   c.close();
 }, 20_000);
 
+test("resizing from one tab: every tab learns the size and gets a fresh screen, and the program sees it", async () => {
+  const a = await Tab.open();
+  const b = await Tab.open();
+  const daemonMessage = await a.next<{ t: "daemon"; up: boolean; features?: string[] }>((m) => m.t === "daemon");
+  expect(daemonMessage.up).toBe(true);
+  expect(daemonMessage.features).toContain("resize");
+  a.send({ t: "create", cols: 80, rows: 24 });
+  const { session } = await a.next<{ t: "session"; session: SessionView }>((m) => m.t === "session");
+  await b.next((m) => m.t === "session" && m.session.id === session.id);
+  a.send({ t: "sub", session: session.id });
+  b.send({ t: "sub", session: session.id });
+  await a.next((m) => m.t === "snapshot");
+  await b.next((m) => m.t === "snapshot");
+  a.send({ t: "input", session: session.id, data: "stty size\r" });
+  await until(() => a.output(session.id).includes("24 80") && b.output(session.id).includes("24 80"), "the size before");
+
+  a.send({ t: "resize", session: session.id, cols: 132, rows: 40 });
+  for (const tab of [a, b]) {
+    await tab.next((m) => m.t === "session" && m.session.id === session.id && m.session.cols === 132 && m.session.rows === 40);
+    const { snapshot } = await tab.next<{ t: "snapshot"; snapshot: Snapshot }>((m) => m.t === "snapshot");
+    expect([snapshot.cols, snapshot.rows]).toEqual([132, 40]);
+  }
+  // The stream after each snapshot continues without a gap (Tab throws on one), and the
+  // program was told about the new size.
+  a.send({ t: "input", session: session.id, data: "stty size\r" });
+  await until(() => a.output(session.id).includes("40 132") && b.output(session.id).includes("40 132"), "the size after");
+
+  a.send({ t: "close", session: session.id });
+  await a.next((m) => m.t === "removed" && m.session === session.id);
+  a.close();
+  b.close();
+}, 20_000);
+
 test("sessions survive a server restart", async () => {
   const before = await Tab.open();
   before.send({ t: "create", cols: 100, rows: 30, cmd: "echo survivor-$((40+2))" });
@@ -190,6 +223,44 @@ test("sessions survive a server restart", async () => {
   await after.next((m) => m.t === "removed" && m.session === session.id);
   after.close();
 }, 30_000);
+
+test("windows: a frame placed from one tab reaches every tab, a bad one is ignored, a move to another tab drops it", async () => {
+  const a = await Tab.open();
+  const b = await Tab.open();
+  const { tabs } = await a.next<{ t: "tabs"; tabs: TabView[] }>((m) => m.t === "tabs");
+  const main = tabs[0]!.id;
+  a.send({ t: "create", cols: 80, rows: 24 });
+  const { session } = await a.next<{ t: "session"; session: SessionView }>((m) => m.t === "session");
+  expect(session.frame).toBeUndefined();
+  await b.next((m) => m.t === "session" && m.session.id === session.id);
+
+  a.send({ t: "session-frame", session: session.id, frame: { x: 0.5, y: "top", w: 0.5, h: 0.5, z: 1 } as never });
+  a.send({ t: "session-frame", session: session.id, frame: { x: 0.5, y: 0.00004, w: 0.5, h: 0.5, z: 7 } });
+  for (const tab of [a, b]) {
+    const placed = await tab.next<{ t: "session"; session: SessionView }>((m) => m.t === "session" && m.session.id === session.id);
+    expect(placed.session.frame).toEqual({ x: 0.5, y: 0, w: 0.5, h: 0.5, z: 7 }); // the bad frame caused no broadcast
+  }
+
+  a.send({ t: "tab-update", id: main, layout: "windows" });
+  await b.next((m) => m.t === "tabs" && m.tabs[0]?.layout === "windows");
+  const other = "abcdef01";
+  a.send({ t: "tab-create", id: other, name: "other", color: "#2ea043", grid: "2x2", layout: "windows" });
+  const created = await b.next<{ t: "tabs"; tabs: TabView[] }>((m) => m.t === "tabs" && m.tabs.some((t) => t.id === other));
+  expect(created.tabs.find((t) => t.id === other)?.layout).toBe("windows");
+
+  a.send({ t: "session-move", session: session.id, tab: other });
+  const moved = await b.next<{ t: "session"; session: SessionView }>((m) => m.t === "session" && m.session.tab === other);
+  expect(moved.session.frame).toBeUndefined();
+
+  a.send({ t: "tab-update", id: main, layout: "grid" });
+  await b.next((m) => m.t === "tabs" && m.tabs[0]?.layout === "grid");
+  a.send({ t: "tab-delete", id: other });
+  await a.next((m) => m.t === "tabs" && !m.tabs.some((t) => t.id === other));
+  a.send({ t: "close", session: session.id });
+  await a.next((m) => m.t === "removed" && m.session === session.id);
+  a.close();
+  b.close();
+});
 
 test("health names the owner's uid so `up` can tell instances apart", async () => {
   const health = (await (await fetch(`${base}/api/health`)).json()) as { ok: boolean; uid: number };

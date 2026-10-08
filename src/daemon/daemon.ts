@@ -19,6 +19,7 @@ import {
   type HelloResult,
   KIND_JSON,
   PROTOCOL_VERSION,
+  SIZE_LIMITS,
 } from "../common/protocol.ts";
 import { QueuedWriter } from "../common/socket.ts";
 import { VERSION } from "../common/version.ts";
@@ -41,6 +42,9 @@ export interface DaemonHandle {
 // A server that stops reading must not make the daemon buffer without bound. Past this
 // backlog the connection is dropped; the server reconnects and resubscribes with snapshots.
 const MAX_CONNECTION_BACKLOG = 128 * 1024 * 1024;
+
+/** Requests beyond protocol 1's first set that this daemon answers; the hello reply carries them. */
+export const DAEMON_FEATURES = ["resize"];
 
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
   const log = options.log ?? ((message: string) => console.error(`[daemon] ${message}`));
@@ -72,8 +76,8 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
     log,
     sessions,
     create(request) {
-      const cols = clampInt(request.cols, 2, 1000);
-      const rows = clampInt(request.rows, 1, 500);
+      const cols = clampInt(request.cols, SIZE_LIMITS.minCols, SIZE_LIMITS.maxCols);
+      const rows = clampInt(request.rows, SIZE_LIMITS.minRows, SIZE_LIMITS.maxRows);
       const cwd = resolveCwd(request.cwd);
       const id = newSessionId(sessions);
       const session = new Session({
@@ -218,7 +222,12 @@ class Connection implements Subscriber {
   private dispatch(request: DaemonRequestFrame): void {
     switch (request.op) {
       case "hello": {
-        const hello: HelloResult = { protocol: PROTOCOL_VERSION, version: VERSION, pid: process.pid };
+        const hello: HelloResult = {
+          protocol: PROTOCOL_VERSION,
+          version: VERSION,
+          pid: process.pid,
+          features: [...DAEMON_FEATURES],
+        };
         this.respond(request.id, hello);
         return;
       }
@@ -257,10 +266,26 @@ class Connection implements Subscriber {
       case "focus":
         this.session(request.session).setFocus(`${this.id}:${request.client}`, request.focused);
         return;
+      case "resize": {
+        const session = this.session(request.session);
+        const cols = clampInt(request.cols, SIZE_LIMITS.minCols, SIZE_LIMITS.maxCols);
+        const rows = clampInt(request.rows, SIZE_LIMITS.minRows, SIZE_LIMITS.maxRows);
+        session.resize(cols, rows, (info) => {
+          this.context.log(`session ${info.id} resized to ${info.cols}x${info.rows}`);
+          this.respond(request.id, info);
+        });
+        return;
+      }
       case "close":
         this.context.close(request.session);
         this.respond(request.id, null);
         return;
+      default: {
+        // A request this daemon does not know, from a newer server or CLI: answer it, so the
+        // caller does not wait for a reply that never comes.
+        const unknown = request as { id: number; op: string };
+        this.fail(unknown.id, `unknown request: ${unknown.op}`);
+      }
     }
   }
 }

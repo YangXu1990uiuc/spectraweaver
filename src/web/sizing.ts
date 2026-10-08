@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
-// Terminal sizes are fixed at creation (DESIGN.md §4). The new-terminal dialog pre-fills a
-// size whose shape matches the tiles of the current layout at the user's preferred text
-// size; the user can still type any size.
+// A terminal's size is set when it is created and changes only on an explicit resize (DESIGN.md
+// §4). The new-terminal dialog pre-fills a size whose shape matches the tiles of the current
+// layout at the user's preferred text size; the user can still type any size. A resize works in
+// whole cells at the text size shown, like a window being dragged.
+
+import { SIZE_LIMITS } from "../common/protocol.ts";
 
 /** A font's cell shape, measured once, plus the display's pixel ratio. */
 export interface FontMetrics {
@@ -86,6 +89,45 @@ export function measureFont(fontFamily: string): FontMetrics {
     heightRatio: rect.height / 100,
     devicePixelRatio: window.devicePixelRatio || 1,
   };
+}
+
+/** The most whole cells of the given size that fit the area, within the daemon's limits. */
+export function cellsThatFit(area: Area, cell: Area): { cols: number; rows: number } {
+  return {
+    cols: clamp(Math.floor(area.width / cell.width), SIZE_LIMITS.minCols, SIZE_LIMITS.maxCols),
+    rows: clamp(Math.floor(area.height / cell.height), SIZE_LIMITS.minRows, SIZE_LIMITS.maxRows),
+  };
+}
+
+/**
+ * The size a drag of the terminal's edge or corner asks for: the pointer's travel in whole cells
+ * at the current cell size, so the text keeps its size, and never more than fits the tile (the
+ * tile is the terminal's screen; zoom out first for more cells at smaller text).
+ */
+export function dragResize(
+  start: { cols: number; rows: number },
+  travel: { dx: number; dy: number },
+  cell: Area,
+  area: Area,
+  axes: { cols: boolean; rows: boolean },
+): { cols: number; rows: number } {
+  const most = cellsThatFit(area, cell);
+  // A terminal already larger than its tile (the font is at its minimum) can only shrink.
+  const maxCols = Math.min(SIZE_LIMITS.maxCols, Math.max(most.cols, start.cols));
+  const maxRows = Math.min(SIZE_LIMITS.maxRows, Math.max(most.rows, start.rows));
+  return {
+    cols: axes.cols ? clamp(Math.round(start.cols + travel.dx / cell.width), SIZE_LIMITS.minCols, maxCols) : start.cols,
+    rows: axes.rows ? clamp(Math.round(start.rows + travel.dy / cell.height), SIZE_LIMITS.minRows, maxRows) : start.rows,
+  };
+}
+
+/**
+ * The zoom (a fraction of the font that fills the tile) at which the text keeps its size after the
+ * grid changes: `fillPx` is the font that would fill the tile with the new grid, `textPx` the size
+ * shown now. Zoom never exceeds 1, so text larger than the fill font gets the fill font.
+ */
+export function zoomKeepingText(fillPx: number, textPx: number, minZoom: number): number {
+  return clamp(textPx / fillPx, minZoom, 1);
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -5,7 +5,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { TILE_COLORS } from "../src/common/protocol.ts";
+import { type TabView, TILE_COLORS } from "../src/common/protocol.ts";
 import { MetaStore } from "../src/server/meta.ts";
 import { tempPaths } from "./helpers.ts";
 
@@ -98,4 +98,43 @@ test("a terminal moved to another tab keeps its colour unless that tab already u
   expect(meta.colorOf("s2", live)).toBe(TILE_COLORS[1]!);
   meta.setSessionTab("s1", "aaaaaaaa", live); // TILE_COLORS[0] is taken by o1: recoloured
   expect(meta.colorOf("s1", live)).toBe(TILE_COLORS[2]!);
+});
+
+test("a window frame is stored checked, survives a restart, and goes when the terminal changes tab", () => {
+  const { meta, file } = store();
+  const main = meta.tabs()[0]!.id;
+  expect(meta.frameOf("s1")).toBeUndefined();
+  expect(meta.setSessionFrame("s1", { x: 0.123456, y: 0.2, w: 0.5, h: 0.25, z: 2 })).toBe(true);
+  const stored = { x: 0.1235, y: 0.2, w: 0.5, h: 0.25, z: 2 };
+  expect(meta.frameOf("s1")).toEqual(stored);
+  expect(meta.setSessionFrame("s1", { x: 0.1, y: 0.2, w: "wide", h: 0.25, z: 2 })).toBe(false);
+  expect(meta.setSessionFrame("s1", "nope")).toBe(false);
+  expect(meta.frameOf("s1")).toEqual(stored); // the bad ones changed nothing
+  meta.flush();
+  expect(new MetaStore(file).frameOf("s1")).toEqual(stored);
+
+  meta.createTab({ id: "cccccccc", name: "other", color: "#2ea043", grid: "2x2" });
+  meta.setSessionTab("s1", main); // the tab it is already in: the window stays
+  expect(meta.frameOf("s1")).toEqual(stored);
+  meta.setSessionTab("s1", "cccccccc"); // another tab: no window there yet
+  expect(meta.frameOf("s1")).toBeUndefined();
+  meta.setSessionFrame("s1", { x: 0, y: 0, w: 0.5, h: 0.5, z: 1 });
+  meta.deleteTab("cccccccc", ["s1"]); // moved to the neighbour: likewise
+  expect(meta.frameOf("s1")).toBeUndefined();
+});
+
+test("a tab is a grid until laid out as windows; unknown layouts are ignored", () => {
+  const { meta, file } = store();
+  const main = meta.tabs()[0]!.id;
+  expect(meta.tabs()[0]!.layout).toBeUndefined();
+  expect(meta.updateTab(main, { layout: "windows" })).toBe(true);
+  expect(meta.tabs()[0]!.layout).toBe("windows");
+  expect(meta.updateTab(main, { layout: "mosaic" })).toBe(true); // ignored, like an invalid colour
+  expect(meta.tabs()[0]!.layout).toBe("windows");
+  expect(meta.createTab({ id: "dddddddd", name: "w", color: "#2ea043", grid: "2x2", layout: "windows" })).toBe(true);
+  const odd = { id: "eeeeeeee", name: "g", color: "#2ea043", grid: "2x2", layout: "spiral" } as unknown as TabView;
+  expect(meta.createTab(odd)).toBe(true);
+  expect(meta.tabs().map((tab) => tab.layout)).toEqual(["windows", "windows", undefined]);
+  meta.flush();
+  expect(new MetaStore(file).tabs().map((tab) => tab.layout)).toEqual(["windows", "windows", undefined]);
 });

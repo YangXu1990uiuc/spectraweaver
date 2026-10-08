@@ -90,6 +90,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
   const clients = new Set<Client>();
   const fans = new Map<string, Fan>();
   const owner = { user: ownerName(), host: hostname() };
+  /** What the connected daemon answers beyond protocol 1's first requests (HelloResult.features). */
+  let daemonFeatures = new Set<string>();
 
   const view = (session: SessionInfo): SessionView => ({
     ...session,
@@ -97,6 +99,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     tab: meta.tabOf(session.id),
     color: meta.colorOf(session.id, sessions.keys()),
     stopped: meta.stopped(session.id),
+    frame: meta.frameOf(session.id),
   });
 
   const send = (client: Client, data: string | Uint8Array) => {
@@ -118,6 +121,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     options.paths.daemonSocket,
     {
       onConnected: (hello) => {
+        daemonFeatures = new Set(hello.features ?? []);
         log(`connected to daemon ${hello.version} (pid ${hello.pid})`);
         daemon
           .call<SessionInfo[]>({ op: "list" })
@@ -129,7 +133,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
             for (const session of [...list].sort((a, b) => a.createdAt - b.createdAt)) {
               meta.colorOf(session.id, sessions.keys());
             }
-            broadcast({ t: "daemon", up: true });
+            broadcast({ t: "daemon", up: true, features: [...daemonFeatures] });
             broadcast({ t: "sessions", sessions: list.map(view) });
             // Browsers keep their subscriptions across a daemon reconnect; each gets a fresh snapshot.
             fans.clear();
@@ -140,7 +144,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       onDisconnected: () => {
         log("daemon disconnected");
         fans.clear();
-        broadcast({ t: "daemon", up: false });
+        daemonFeatures = new Set();
+        broadcast({ t: "daemon", up: false, features: [] });
       },
       onEvent: (event) => onDaemonEvent(event),
       onOutput: (payload, sessionId) => {
@@ -182,6 +187,18 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         const session = sessions.get(event.session);
         if (session) session.cwd = event.cwd;
         broadcastSession(event.session);
+        return;
+      }
+      case "resized": {
+        const session = sessions.get(event.session);
+        if (!session) return;
+        session.cols = event.cols;
+        session.rows = event.rows;
+        broadcastSession(event.session);
+        // Every viewer gets a snapshot at the new size. This event comes in stream order, before
+        // anything the program prints for the new size, and subscribe() takes the browser out of
+        // the fan first: no output meant for the new grid reaches a browser still showing the old one.
+        for (const client of clients) if (client.data.subs.has(event.session)) subscribe(client, event.session);
         return;
       }
       case "bell":
@@ -285,6 +302,26 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       case "close":
         daemon.request({ op: "close", session: String(message.session) });
         return;
+      case "resize": {
+        const id = String(message.session);
+        if (!sessions.has(id)) return;
+        if (!daemonFeatures.has("resize")) {
+          sendJson(client, {
+            t: "error",
+            message:
+              "This daemon predates resizing. To resize terminals, restart it: `spectraweaver down --all` " +
+              "(every session ends), then `spectraweaver up`.",
+          });
+          return;
+        }
+        daemon.request(
+          { op: "resize", session: id, cols: Number(message.cols), rows: Number(message.rows) },
+          (response) => {
+            if (!response.ok) sendJson(client, { t: "error", message: response.error });
+          },
+        );
+        return;
+      }
       case "banner": {
         const id = String(message.session);
         if (!sessions.has(id)) return;
@@ -297,6 +334,11 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         if (sessions.has(id) && meta.setSessionTab(id, String(message.tab), sessions.keys())) broadcastSession(id);
         return;
       }
+      case "session-frame": {
+        const id = String(message.session);
+        if (sessions.has(id) && meta.setSessionFrame(id, message.frame)) broadcastSession(id);
+        return;
+      }
       case "tab-create":
         if (
           meta.createTab({
@@ -304,6 +346,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
             name: String(message.name ?? ""),
             color: String(message.color ?? ""),
             grid: String(message.grid ?? ""),
+            layout: message.layout,
           })
         ) {
           broadcastTabs();
@@ -315,6 +358,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
             name: typeof message.name === "string" ? message.name : undefined,
             color: typeof message.color === "string" ? message.color : undefined,
             grid: typeof message.grid === "string" ? message.grid : undefined,
+            layout: message.layout,
           })
         ) {
           broadcastTabs();
@@ -491,7 +535,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       open(client) {
         clients.add(client);
         sendJson(client, { t: "hello", version: VERSION });
-        sendJson(client, { t: "daemon", up: daemon.connected });
+        sendJson(client, { t: "daemon", up: daemon.connected, features: [...daemonFeatures] });
         sendJson(client, { t: "tabs", tabs: meta.tabs() });
         sendJson(client, { t: "sessions", sessions: [...sessions.values()].map(view) });
       },
