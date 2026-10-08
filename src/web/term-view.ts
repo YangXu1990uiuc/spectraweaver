@@ -13,7 +13,7 @@ import { installKeymap, type Platform } from "./keymap.ts";
 import { suppressQueryReplies } from "./queries.ts";
 import type { ResizeTarget } from "./resize-dialog.ts";
 import { type ResizeGeometry, ResizeHandles } from "./resize.ts";
-import { type Area, cellAt, cellsThatFit, type FontMetrics, measureFont, zoomKeepingText } from "./sizing.ts";
+import { type Area, cellAt, cellsThatFit, fitTextPx, type FontMetrics, measureFont, zoomKeepingText } from "./sizing.ts";
 import { SNAP_SLACK_PX } from "./windows.ts";
 
 /**
@@ -275,10 +275,15 @@ export class TermView {
    */
   requestResize(cols: number, rows: number, textPx = this.term.options.fontSize ?? BASE_FONT_SIZE): void {
     if (cols === this.term.cols && rows === this.term.rows) return;
-    this.pendingResize = { cols, rows, textPx, at: Date.now() };
+    const pending = { cols, rows, textPx, at: Date.now() };
+    this.pendingResize = pending;
     this.options.send({ t: "resize", session: this.sessionId, cols, rows });
     // Should no snapshot come (the daemon refused), fit the tile as it is once the request expires.
-    setTimeout(() => this.scheduleFit(), PENDING_RESIZE_MS + 100);
+    setTimeout(() => {
+      if (this.pendingResize !== pending) return;
+      this.pendingResize = null;
+      this.scheduleFit();
+    }, PENDING_RESIZE_MS + 100);
   }
 
   /** One cell as drawn now, in CSS px; null while the terminal cannot be measured. */
@@ -385,51 +390,31 @@ export class TermView {
     // the snapshot fits once it has applied the new grid.
     const pending = this.pendingResize;
     if (pending && Date.now() - pending.at < PENDING_RESIZE_MS) return false;
-    const measured = this.measureFill();
-    if (!measured) return false;
+    const width = this.element.clientWidth;
+    const height = this.element.clientHeight;
+    const screen = this.term.element?.querySelector<HTMLElement>(".xterm-screen");
+    if (!screen || width < 10 || height < 10) return false;
     const start = this.term.options.fontSize ?? BASE_FONT_SIZE;
     // The epsilon keeps a zoom chosen as textPx / fill (keepTextSize) from landing a step short.
-    const size = clampFont(Math.floor(measured.fill * this.zoom * 4 + 1e-6) / 4);
-    this.term.options.fontSize = size;
+    let size = clampFont(Math.floor(this.fillFont(width, height) * this.zoom * 4 + 1e-6) / 4);
+    if (size !== start) this.term.options.fontSize = size;
+    // The model can be a device pixel off at a rounding boundary: the grid must never overflow.
+    while (size > MIN_FONT_SIZE && (screen.offsetWidth > width || screen.offsetHeight > height)) {
+      size -= 0.25;
+      this.term.options.fontSize = size;
+    }
     this.handles?.layout();
     return size !== start;
   }
 
   /**
-   * The largest font, in quarter pixels, at which the grid fits the tile: measured by trying
-   * font sizes on the terminal, not modelled. The renderer snaps cells to whole device pixels,
-   * so the screen is a step function of the font size that a linear estimate can miss by a step
-   * (and iterating one can oscillate around); cells never shrink as the font grows, so the
-   * answer is found by search, starting around the linear guess. Leaves the terminal at some
-   * probed size: the caller sets the one it wants. Null while the tile cannot be measured.
+   * The largest font, in quarter pixels, at which the grid fits the tile, from the font's own
+   * metrics with the renderer's device-pixel snapping (fitTextPx) rather than by trying sizes on
+   * the terminal: each size tried makes the WebGL renderer rebuild its glyph atlas, and a run of
+   * them left it drawing nothing until the next size change. The font is set once, by fit().
    */
-  private measureFill(): { fill: number; width: number; height: number } | null {
-    const width = this.element.clientWidth;
-    const height = this.element.clientHeight;
-    const screen = this.term.element?.querySelector<HTMLElement>(".xterm-screen");
-    if (!screen || width < 10 || height < 10 || !screen.offsetWidth || !screen.offsetHeight) return null;
-    const fits = (quarters: number) => {
-      this.term.options.fontSize = quarters / 4;
-      return screen.offsetWidth <= width && screen.offsetHeight <= height;
-    };
-    const current = this.term.options.fontSize ?? BASE_FONT_SIZE;
-    const guess = clampFont(current * Math.min(width / screen.offsetWidth, height / screen.offsetHeight));
-    let low = Math.max(MIN_FONT_SIZE * 4, Math.floor(guess * 3)); // three quarters of the guess
-    let high = Math.min(MAX_FONT_SIZE * 4, Math.ceil(guess * 5)); // and five quarters, in quarter pixels
-    if (!fits(low)) {
-      high = low - 1;
-      low = MIN_FONT_SIZE * 4;
-      if (!fits(low)) return { fill: MIN_FONT_SIZE, width, height }; // even the smallest font overflows
-    } else if (fits(high)) {
-      low = high;
-      high = MAX_FONT_SIZE * 4;
-    }
-    while (low < high) {
-      const mid = Math.ceil((low + high) / 2);
-      if (fits(mid)) low = mid;
-      else high = mid - 1;
-    }
-    return { fill: low / 4, width, height };
+  private fillFont(width: number, height: number): number {
+    return fitTextPx({ width, height }, this.term.cols, this.term.rows, trueFont());
   }
 
   /** The terminal as drawn now: grid, cell and screen size, and the tile area it may fill. */
@@ -449,13 +434,15 @@ export class TermView {
 
   /**
    * Sets the zoom at which the grid the terminal has now shows text of size `textPx` in this
-   * tile: the fraction of the measured fill font that gives it. Text larger than the fill
-   * (a size the dialog or Ctrl + asked for that does not quite fit) gets the fill.
+   * tile: the fraction of the fill font (fillFont, as fit() reckons it) that gives it. Text
+   * larger than the fill (a size the dialog or Ctrl + asked for that does not quite fit) gets
+   * the fill.
    */
   private keepTextSize(textPx: number): void {
-    const measured = this.measureFill();
-    if (!measured) return;
-    this.zoom = zoomKeepingText(measured.fill, textPx, MIN_ZOOM);
+    const width = this.element.clientWidth;
+    const height = this.element.clientHeight;
+    if (width < 10 || height < 10) return;
+    this.zoom = zoomKeepingText(this.fillFont(width, height), textPx, MIN_ZOOM);
     saveZoom(this.sessionId, this.zoom);
   }
 
