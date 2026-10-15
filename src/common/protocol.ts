@@ -96,7 +96,7 @@ export interface SessionView extends SessionInfo {
 }
 
 /**
- * A terminal's window in its tab under the "windows" layout: position and size as fractions of
+ * A terminal's window in its tab: position and size as fractions of
  * the workspace, so every screen shows the same arrangement at its own size, and `z`, which
  * orders overlapping windows (higher is in front).
  */
@@ -147,18 +147,6 @@ export interface TabView {
   color: string;
   /** Tiles per screen in matrix order, "rowsxcols": "2x3" is 2 rows of 3 tiles. */
   grid: string;
-  /**
-   * How the tab arranges its terminals: windows the user moves and resizes (the default, and what
-   * a tab from before this field means), or a grid of equal tiles. The grid sizes new windows too.
-   */
-  layout?: TabLayout;
-}
-
-export const TAB_LAYOUTS = ["grid", "windows"] as const;
-export type TabLayout = (typeof TAB_LAYOUTS)[number];
-
-export function isTabLayout(value: unknown): value is TabLayout {
-  return (TAB_LAYOUTS as readonly unknown[]).includes(value);
 }
 
 export const TAB_COLORS = [
@@ -193,8 +181,8 @@ export type ClientMessage =
   | { t: "session-move"; session: string; tab: string }
   /** Places or restacks a terminal's window; the server checks it with normalizeFrame. */
   | { t: "session-frame"; session: string; frame: Frame }
-  | { t: "tab-create"; id: string; name: string; color: string; grid: string; layout?: TabLayout }
-  | { t: "tab-update"; id: string; name?: string; color?: string; grid?: string; layout?: TabLayout }
+  | { t: "tab-create"; id: string; name: string; color: string; grid: string }
+  | { t: "tab-update"; id: string; name?: string; color?: string; grid?: string }
   | { t: "tab-delete"; id: string }
   | { t: "tab-move"; id: string; index: number }
   | { t: "agents-stop" }

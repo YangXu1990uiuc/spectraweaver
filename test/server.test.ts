@@ -241,19 +241,14 @@ test("windows: a frame placed from one tab reaches every tab, a bad one is ignor
     expect(placed.session.frame).toEqual({ x: 0.5, y: 0, w: 0.5, h: 0.5, z: 7 }); // the bad frame caused no broadcast
   }
 
-  a.send({ t: "tab-update", id: main, layout: "windows" });
-  await b.next((m) => m.t === "tabs" && m.tabs[0]?.layout === "windows");
   const other = "abcdef01";
-  a.send({ t: "tab-create", id: other, name: "other", color: "#2ea043", grid: "2x2", layout: "windows" });
-  const created = await b.next<{ t: "tabs"; tabs: TabView[] }>((m) => m.t === "tabs" && m.tabs.some((t) => t.id === other));
-  expect(created.tabs.find((t) => t.id === other)?.layout).toBe("windows");
+  a.send({ t: "tab-create", id: other, name: "other", color: "#2ea043", grid: "2x2" });
+  await b.next((m) => m.t === "tabs" && m.tabs.some((t) => t.id === other));
 
   a.send({ t: "session-move", session: session.id, tab: other });
   const moved = await b.next<{ t: "session"; session: SessionView }>((m) => m.t === "session" && m.session.tab === other);
   expect(moved.session.frame).toBeUndefined();
 
-  a.send({ t: "tab-update", id: main, layout: "grid" });
-  await b.next((m) => m.t === "tabs" && m.tabs[0]?.layout === "grid");
   a.send({ t: "tab-delete", id: other });
   await a.next((m) => m.t === "tabs" && !m.tabs.some((t) => t.id === other));
   a.send({ t: "close", session: session.id });

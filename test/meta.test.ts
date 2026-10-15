@@ -122,19 +122,3 @@ test("a window frame is stored checked, survives a restart, and goes when the te
   meta.deleteTab("cccccccc", ["s1"]); // moved to the neighbour: likewise
   expect(meta.frameOf("s1")).toBeUndefined();
 });
-
-test("a tab is a grid until laid out as windows; unknown layouts are ignored", () => {
-  const { meta, file } = store();
-  const main = meta.tabs()[0]!.id;
-  expect(meta.tabs()[0]!.layout).toBeUndefined();
-  expect(meta.updateTab(main, { layout: "windows" })).toBe(true);
-  expect(meta.tabs()[0]!.layout).toBe("windows");
-  expect(meta.updateTab(main, { layout: "mosaic" })).toBe(true); // ignored, like an invalid colour
-  expect(meta.tabs()[0]!.layout).toBe("windows");
-  expect(meta.createTab({ id: "dddddddd", name: "w", color: "#2ea043", grid: "2x2", layout: "windows" })).toBe(true);
-  const odd = { id: "eeeeeeee", name: "g", color: "#2ea043", grid: "2x2", layout: "spiral" } as unknown as TabView;
-  expect(meta.createTab(odd)).toBe(true);
-  expect(meta.tabs().map((tab) => tab.layout)).toEqual(["windows", "windows", undefined]);
-  meta.flush();
-  expect(new MetaStore(file).tabs().map((tab) => tab.layout)).toEqual(["windows", "windows", undefined]);
-});

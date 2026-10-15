@@ -7,14 +7,9 @@
 // of the workspace, so every screen shows the same arrangement at its own size; a drag is worked
 // out here on rectangles in CSS px and converted back. Pure functions, tested without a browser.
 
-import { type Frame, FRAME_MIN_SIDE, SIZE_LIMITS, type TabLayout } from "../common/protocol.ts";
+import { type Frame, FRAME_MIN_SIDE, SIZE_LIMITS } from "../common/protocol.ts";
 import type { Grid } from "./dom.ts";
 import type { Area } from "./sizing.ts";
-
-/** A tab's layout; windows unless the tab asks for a grid (tabs from before layouts existed are windows too). */
-export function layoutOf(tab: { layout?: TabLayout } | null): TabLayout {
-  return tab?.layout === "grid" ? "grid" : "windows";
-}
 
 export interface Rect {
   left: number;
@@ -37,6 +32,29 @@ export const DRAG_THRESHOLD_PX = 4;
 export const SNAP_SLACK_PX = 2;
 /** Windows that find no free cell cascade from the top-left by this fraction per step. */
 const CASCADE_STEP = 0.03;
+/**
+ * With snapping on, windows snap to grid lines at 36ths of the workspace: fine enough to place
+ * windows freely, and halves, thirds and quarters all fall on them.
+ */
+export const SNAP_DIVISIONS = 36;
+
+/** The grid line nearest to a position along an axis of the given extent. */
+function snapLine(value: number, extent: number): number {
+  const step = extent / SNAP_DIVISIONS;
+  return Math.round(value / step) * step;
+}
+
+/**
+ * A moved window snapped: its top-left corner on the nearest grid lines, inside the workspace.
+ * Its size stays, so moving never resizes the terminal.
+ */
+export function snapMove(rect: Rect, workspace: Area): Rect {
+  return {
+    ...rect,
+    left: clamp(snapLine(rect.left, workspace.width), 0, Math.max(0, workspace.width - rect.width)),
+    top: clamp(snapLine(rect.top, workspace.height), 0, Math.max(0, workspace.height - rect.height)),
+  };
+}
 
 export function frameToRect(frame: Frame, workspace: Area): Rect {
   return {
@@ -121,6 +139,8 @@ export interface ResizeLimits {
   cell: Area | null;
   /** The terminal's size now, for the axes a handle leaves alone. */
   current: { cols: number; rows: number };
+  /** The moving edges land on grid lines (SNAP_DIVISIONS), and the terminal takes the cells that fit. */
+  snap?: boolean;
 }
 
 export interface Resized {
@@ -144,6 +164,7 @@ export function resizeRect(start: Rect, travel: { dx: number; dy: number }, edge
     cell: cell?.width ?? null,
     minCells: SIZE_LIMITS.minCols,
     maxCells: SIZE_LIMITS.maxCols,
+    snap: limits.snap === true,
   });
   const y = resizeAxis(start.top, start.height, travel.dy, edges.top, edges.bottom, {
     min: Math.max(MIN_WINDOW.height, chrome.height + (cell ? SIZE_LIMITS.minRows * cell.height + SNAP_SLACK_PX : 0)),
@@ -152,6 +173,7 @@ export function resizeRect(start: Rect, travel: { dx: number; dy: number }, edge
     cell: cell?.height ?? null,
     minCells: SIZE_LIMITS.minRows,
     maxCells: SIZE_LIMITS.maxRows,
+    snap: limits.snap === true,
   });
   return {
     rect: { left: x.start, top: y.start, width: x.size, height: y.size },
@@ -166,6 +188,7 @@ interface AxisLimits {
   cell: number | null;
   minCells: number;
   maxCells: number;
+  snap: boolean;
 }
 
 /** One axis of resizeRect; `cells` is null when neither edge on this axis moves. */
@@ -183,6 +206,7 @@ function resizeAxis(
   // The lower bound wins when the workspace is too small for the minimum.
   if (lowMoves) low = Math.max(0, Math.min(low + delta, high - limits.min));
   if (highMoves) high = Math.min(limits.extent, Math.max(high + delta, low + limits.min));
+  if (limits.snap) return snapAxis(low, high, lowMoves, highMoves, limits);
   let cells: number | null = null;
   if (limits.cell !== null) {
     // The cells that fit beside the chrome and the slack; the epsilon keeps a window that was
@@ -197,6 +221,36 @@ function resizeAxis(
       else high = low + snapped;
     }
   }
+  return { start: low, size: high - low, cells };
+}
+
+/**
+ * resizeAxis with snapping: the moving edge goes to the nearest grid line (one line further out
+ * if that would make the window too small), and the window keeps that size. The terminal takes
+ * the whole cells that fit, so a little room may stay blank, as in a grid tile.
+ */
+function snapAxis(
+  low: number,
+  high: number,
+  lowMoves: boolean,
+  highMoves: boolean,
+  limits: AxisLimits,
+): { start: number; size: number; cells: number | null } {
+  const step = limits.extent / SNAP_DIVISIONS;
+  if (lowMoves) {
+    low = snapLine(low, limits.extent);
+    while (high - low < limits.min && low - step >= -1e-6) low -= step;
+    low = Math.max(0, low);
+  }
+  if (highMoves) {
+    high = snapLine(high, limits.extent);
+    while (high - low < limits.min && high + step <= limits.extent + 1e-6) high += step;
+    high = Math.min(limits.extent, high);
+  }
+  const cells =
+    limits.cell === null
+      ? null
+      : clamp(Math.floor((high - low - limits.chrome - SNAP_SLACK_PX) / limits.cell + 1e-6), limits.minCells, limits.maxCells);
   return { start: low, size: high - low, cells };
 }
 

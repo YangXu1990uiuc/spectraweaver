@@ -100,28 +100,6 @@ export function cellsThatFit(area: Area, cell: Area): { cols: number; rows: numb
 }
 
 /**
- * The size a drag of the terminal's edge or corner asks for: the pointer's travel in whole cells
- * at the current cell size, so the text keeps its size, and never more than fits the tile (the
- * tile is the terminal's screen; zoom out first for more cells at smaller text).
- */
-export function dragResize(
-  start: { cols: number; rows: number },
-  travel: { dx: number; dy: number },
-  cell: Area,
-  area: Area,
-  axes: { cols: boolean; rows: boolean },
-): { cols: number; rows: number } {
-  const most = cellsThatFit(area, cell);
-  // A terminal already larger than its tile (the font is at its minimum) can only shrink.
-  const maxCols = Math.min(SIZE_LIMITS.maxCols, Math.max(most.cols, start.cols));
-  const maxRows = Math.min(SIZE_LIMITS.maxRows, Math.max(most.rows, start.rows));
-  return {
-    cols: axes.cols ? clamp(Math.round(start.cols + travel.dx / cell.width), SIZE_LIMITS.minCols, maxCols) : start.cols,
-    rows: axes.rows ? clamp(Math.round(start.rows + travel.dy / cell.height), SIZE_LIMITS.minRows, maxRows) : start.rows,
-  };
-}
-
-/**
  * The zoom (a fraction of the font that fills the tile) at which the text keeps its size after the
  * grid changes: `fillPx` is the font that would fill the tile with the new grid, `textPx` the size
  * shown now. Zoom never exceeds 1, so text larger than the fill font gets the fill font.

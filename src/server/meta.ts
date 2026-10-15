@@ -7,7 +7,6 @@ import { writeFileAtomic } from "../common/files.ts";
 import {
   type Frame,
   GRID_PATTERN,
-  isTabLayout,
   normalizeFrame,
   type StoppedAgent,
   TAB_COLORS,
@@ -20,7 +19,7 @@ interface SessionMeta {
   tab?: string;
   color?: string;
   stopped?: StoppedAgent;
-  /** The session's window in its tab's "windows" layout; absent until the user places it. */
+  /** The session's window in its tab; absent until the user places it. */
   frame?: Frame;
 }
 
@@ -134,19 +133,17 @@ export class MetaStore {
       name: cleanName(tab.name) || "New tab",
       color: COLOR.test(tab.color) ? tab.color : TAB_COLORS[0],
       grid: GRID_PATTERN.test(tab.grid) ? tab.grid : DEFAULT_TAB.grid,
-      ...(isTabLayout(tab.layout) ? { layout: tab.layout } : {}),
     });
     this.scheduleSave();
     return true;
   }
 
-  updateTab(id: string, patch: { name?: string; color?: string; grid?: string; layout?: unknown }): boolean {
+  updateTab(id: string, patch: { name?: string; color?: string; grid?: string }): boolean {
     const tab = this.data.tabs.find((candidate) => candidate.id === id);
     if (!tab) return false;
     if (patch.name !== undefined && cleanName(patch.name)) tab.name = cleanName(patch.name);
     if (patch.color !== undefined && COLOR.test(patch.color)) tab.color = patch.color;
     if (patch.grid !== undefined && GRID_PATTERN.test(patch.grid)) tab.grid = patch.grid;
-    if (isTabLayout(patch.layout)) tab.layout = patch.layout;
     this.scheduleSave();
     return true;
   }
