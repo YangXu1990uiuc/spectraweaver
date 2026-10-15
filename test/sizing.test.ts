@@ -3,7 +3,7 @@
 // Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { expect, test } from "bun:test";
-import { cellAt, cellsThatFit, coverage, dragResize, fitTextPx, recommendSize, zoomKeepingText } from "../src/web/sizing.ts";
+import { cellAt, cellsThatFit, coverage, fitTextPx, recommendSize, zoomKeepingText } from "../src/web/sizing.ts";
 
 // A typical monospace font (0.6 em advance, 1.2 em line) on a standard display.
 const font = { widthRatio: 0.6, heightRatio: 1.2, devicePixelRatio: 1 };
@@ -43,24 +43,6 @@ test("a wide terminal in a tall tile is width-limited and leaves space below", (
 test("recommendations stay within the limits the daemon accepts", () => {
   expect(recommendSize({ width: 50, height: 20 }, font, 24)).toEqual({ cols: 20, rows: 5 });
   expect(recommendSize({ width: 1e6, height: 1e6 }, font, 8)).toEqual({ cols: 1000, rows: 500 });
-});
-
-test("a drag asks for whole cells at the current cell size and stops at the tile's edge", () => {
-  const cell = { width: 8, height: 16 };
-  const area = { width: 1000, height: 500 }; // room for 125 x 31 cells
-  const start = { cols: 100, rows: 24 };
-  const both = { cols: true, rows: true };
-  // 83 px right is 10.4 cells, 40 px up is 2.5 cells: rounded to whole cells.
-  expect(dragResize(start, { dx: 83, dy: -40 }, cell, area, both)).toEqual({ cols: 110, rows: 22 });
-  // Never beyond the tile, never below the daemon's minimum.
-  expect(dragResize(start, { dx: 5000, dy: 5000 }, cell, area, both)).toEqual({ cols: 125, rows: 31 });
-  expect(dragResize(start, { dx: -5000, dy: -5000 }, cell, area, both)).toEqual({ cols: 2, rows: 1 });
-  // An edge moves one axis only.
-  expect(dragResize(start, { dx: 83, dy: 83 }, cell, area, { cols: true, rows: false })).toEqual({ cols: 110, rows: 24 });
-  expect(dragResize(start, { dx: 83, dy: 83 }, cell, area, { cols: false, rows: true })).toEqual({ cols: 100, rows: 29 });
-  // A terminal already wider than its tile can only shrink, not grow further.
-  expect(dragResize({ cols: 140, rows: 24 }, { dx: 100, dy: 0 }, cell, area, both)).toEqual({ cols: 140, rows: 24 });
-  expect(dragResize({ cols: 140, rows: 24 }, { dx: -80, dy: 0 }, cell, area, both)).toEqual({ cols: 130, rows: 24 });
 });
 
 test("filling the tile is the most whole cells that fit, within the daemon's limits", () => {

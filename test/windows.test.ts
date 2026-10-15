@@ -7,24 +7,17 @@ import { normalizeFrame } from "../src/common/protocol.ts";
 import {
   cellFrame,
   frameToRect,
-  layoutOf,
   MIN_WINDOW,
   moveRect,
   placeWindow,
   rectToFrame,
   resizeRect,
   SNAP_SLACK_PX as SLACK,
+  snapMove,
   topZ,
 } from "../src/web/windows.ts";
 
 const workspace = { width: 1600, height: 900 };
-
-test("a tab is laid out as windows unless it asks for a grid", () => {
-  expect(layoutOf(null)).toBe("windows");
-  expect(layoutOf({})).toBe("windows"); // a tab from before layouts existed
-  expect(layoutOf({ layout: "windows" })).toBe("windows");
-  expect(layoutOf({ layout: "grid" })).toBe("grid");
-});
 
 test("a frame from a browser is checked, rounded and kept inside the workspace", () => {
   expect(normalizeFrame({ x: 0.123456, y: 0.2, w: 0.5, h: 0.25, z: 3 })).toEqual({ x: 0.1235, y: 0.2, w: 0.5, h: 0.25, z: 3 });
@@ -127,4 +120,39 @@ test("resizing by an edge keeps the opposite edge, snaps the terminal to whole c
 test("the top of the stack is the highest z, 0 with nothing stacked", () => {
   expect(topZ([])).toBe(0);
   expect(topZ([{ x: 0, y: 0, w: 1, h: 1, z: 3 }, { x: 0, y: 0, w: 1, h: 1, z: 7 }])).toBe(7);
+});
+
+test("with snapping, a moved window's corner lands on a grid line and its size stays", () => {
+  // 36ths of 1600 x 900: lines every 44.44 px across and 25 px down.
+  const moved = snapMove({ left: 300, top: 170, width: 500, height: 300 }, workspace);
+  expect(moved.left).toBeCloseTo(311.11, 1);
+  expect(moved.top).toBe(175);
+  expect([moved.width, moved.height]).toEqual([500, 300]);
+  // Pulled inside: the corner may not push the window over the far edge.
+  expect(snapMove({ left: 1590, top: 0, width: 500, height: 300 }, workspace).left).toBe(1100);
+});
+
+test("with snapping, a resized edge lands on a grid line and the terminal takes the cells that fit", () => {
+  const cell = { width: 8, height: 16 };
+  const chrome = { width: 2, height: 30 };
+  const start = { left: 0, top: 0, width: 800, height: 450 }; // half by half
+  const limits = { workspace, chrome, cell, current: { cols: 99, rows: 25 }, snap: true };
+  const right = { left: false, right: true, top: false, bottom: false };
+
+  // Dragging the right edge to 1120 lands on the nearest line, 1111.11 (25 36ths).
+  const wider = resizeRect(start, { dx: 320, dy: 0 }, right, limits);
+  expect(wider.rect.width).toBeCloseTo(1111.11, 1);
+  expect(wider.cells).toEqual({ cols: Math.floor((1111.11 - 2 - 2) / 8), rows: 25 });
+
+  // The window keeps the grid line's size rather than shrinking to its cells, unlike free resizing.
+  const free = resizeRect(start, { dx: 320, dy: 0 }, right, { ...limits, snap: false });
+  expect(free.rect.width).toBe(2 + free.cells!.cols * 8 + 2);
+
+  // Too small on the nearest line: one line further out, never below the minimum window.
+  const tiny = resizeRect(start, { dx: -790, dy: 0 }, right, limits);
+  expect(tiny.rect.width).toBeGreaterThanOrEqual(180);
+  expect(tiny.rect.width % (1600 / 36)).toBeCloseTo(0, 6);
+
+  // The opposite edge never moves.
+  expect(wider.rect.left).toBe(0);
 });

@@ -12,7 +12,6 @@ import { loadSetting, saveSetting } from "./dom.ts";
 import { installKeymap, type Platform } from "./keymap.ts";
 import { suppressQueryReplies } from "./queries.ts";
 import type { ResizeTarget } from "./resize-dialog.ts";
-import { type ResizeGeometry, ResizeHandles } from "./resize.ts";
 import { type Area, cellAt, cellsThatFit, fitTextPx, type FontMetrics, measureFont, zoomKeepingText } from "./sizing.ts";
 import { SNAP_SLACK_PX } from "./windows.ts";
 
@@ -77,6 +76,18 @@ function openLink(uri: string): void {
   if (/^https?:\/\//i.test(uri)) window.open(uri, "_blank", "noopener,noreferrer");
 }
 
+/** The terminal as drawn now, in CSS pixels. */
+interface Geometry {
+  cols: number;
+  rows: number;
+  /** One cell. */
+  cell: Area;
+  /** The screen: cols x cell.width by rows x cell.height. */
+  screen: Area;
+  /** The tile's terminal area: the most the terminal can grow to at this text size. */
+  area: Area;
+}
+
 /**
  * One session rendered in one tile. The terminal keeps the session's size until the session is
  * resized on purpose (requestResize); fitting the tile and zooming only change the font size
@@ -97,7 +108,6 @@ export class TermView {
   private paused = false;
   /** When the last snapshot request went out, until the snapshot arrives. */
   private awaitingSnapshotSince: number | null = null;
-  private handles: ResizeHandles | null = null;
   private resizable = false;
   /** A resize this tile asked for, until the snapshot at the new size arrives. */
   private pendingResize: { cols: number; rows: number; textPx: number; at: number } | null = null;
@@ -132,13 +142,6 @@ export class TermView {
     parent.appendChild(this.element);
     const term = this.term;
     term.open(this.element);
-    this.handles = new ResizeHandles({
-      host: this.element,
-      geometry: () => this.geometry(),
-      commit: (cols, rows) => this.requestResize(cols, rows),
-      fill: () => this.fillTile(),
-    });
-    this.handles.setEnabled(this.resizable);
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = "11";
     term.loadAddon(new WebLinksAddon((_event, uri) => openLink(uri)));
@@ -259,14 +262,9 @@ export class TermView {
     this.term.refresh(0, this.term.rows - 1);
   }
 
-  /**
-   * Whether the terminal can be resized (the daemon must know how, and the program must be
-   * running), and whether its own edges are the handles for it (not in a window, whose edges
-   * resize window and terminal together).
-   */
-  setResizable(resizable: boolean, handles = resizable): void {
+  /** Whether the terminal can be resized: the daemon must know how, and the program must be running. */
+  setResizable(resizable: boolean): void {
     this.resizable = resizable;
-    this.handles?.setEnabled(resizable && handles);
   }
 
   /**
@@ -291,13 +289,6 @@ export class TermView {
     return this.geometry()?.cell ?? null;
   }
 
-  /** Resizes to the most cells that fit the tile at the current text size. */
-  fillTile(): void {
-    const geometry = this.geometry();
-    if (!geometry) return;
-    const { cols, rows } = cellsThatFit(geometry.area, geometry.cell);
-    this.requestResize(cols, rows);
-  }
 
   /** What the resize dialog needs, measured now; null while the terminal cannot be measured. */
   resizeTarget(name: string): ResizeTarget | null {
@@ -317,7 +308,6 @@ export class TermView {
   dispose(): void {
     if (this.focused) this.setFocused(false);
     this.resizeObserver?.disconnect();
-    this.handles?.dispose();
     this.term.dispose();
     this.element.remove();
   }
@@ -403,7 +393,6 @@ export class TermView {
       size -= 0.25;
       this.term.options.fontSize = size;
     }
-    this.handles?.layout();
     return size !== start;
   }
 
@@ -418,7 +407,7 @@ export class TermView {
   }
 
   /** The terminal as drawn now: grid, cell and screen size, and the tile area it may fill. */
-  private geometry(): ResizeGeometry | null {
+  private geometry(): Geometry | null {
     const screen = this.term.element?.querySelector<HTMLElement>(".xterm-screen");
     const width = screen?.offsetWidth ?? 0;
     const height = screen?.offsetHeight ?? 0;

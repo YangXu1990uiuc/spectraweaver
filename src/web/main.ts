@@ -7,13 +7,12 @@ import {
   type ClientMessage,
   decodeOutputPayload,
   type Frame,
-  GRID_PATTERN,
   type ServerMessage,
   type SessionView,
   TAB_COLORS,
   type TabView,
 } from "../common/protocol.ts";
-import { adoptFormerSettings, el, formatGrid, type Grid, loadSetting, parseGrid, randomId, saveSetting } from "./dom.ts";
+import { adoptFormerSettings, el, type Grid, loadSetting, parseGrid, randomId, saveSetting } from "./dom.ts";
 import { detectPlatform } from "./keymap.ts";
 import { createSettingsDialog, ensureLogin } from "./login.ts";
 import { createNewTerminalDialog } from "./new-dialog.ts";
@@ -22,7 +21,7 @@ import { measureFont } from "./sizing.ts";
 import { SESSION_DRAG_TYPE, TabStrip } from "./tabs.ts";
 import { FONT_FAMILY, TermView } from "./term-view.ts";
 import { WindowChrome } from "./window-chrome.ts";
-import { layoutOf, placeWindow, rectToFrame, topZ } from "./windows.ts";
+import { placeWindow, topZ } from "./windows.ts";
 
 // Refuse to run inside another site's frame, so a page cannot overlay the terminal and trick
 // clicks or keystrokes into it (clickjacking). SameSite=Strict cookies already keep a framed
@@ -35,8 +34,6 @@ if (window.top !== window.self) {
 adoptFormerSettings();
 
 const platform = detectPlatform();
-// Matrix order, rows x columns: "2x3" is 2 rows of 3 tiles.
-const GRID_PRESETS = ["1x1", "1x2", "1x3", "2x2", "2x3", "2x4", "3x3", "3x4"];
 // Browsers cap live WebGL contexts per page (about 16 in Chrome); later tiles use the DOM renderer.
 const MAX_WEBGL_TILES = 12;
 const GRID_GAP = 4;
@@ -85,16 +82,20 @@ function showTab(id: string): void {
 
 const app = document.getElementById("app") as HTMLDivElement;
 const statusDot = el("span", { class: "status down", title: "Connecting…" });
-// The tab's layout: windows the user arranges (the default), or a grid of equal tiles (rows × columns).
-const layoutSelect = el(
-  "select",
-  { title: "This tab's layout: windows you move and resize, or a grid of equal tiles, rows × columns" },
-  [
-    el("option", { value: "windows" }, ["Windows"]),
-    ...GRID_PRESETS.map((preset) => el("option", { value: preset }, [`Grid ${formatGrid(parseGrid(preset)!)}`])),
-  ],
-);
 const newButton = el("button", { class: "primary" }, ["+ New terminal"]);
+// Per browser, like zoom: some like windows on grid lines, others free.
+const snapBox = el("input", { type: "checkbox" });
+snapBox.checked = loadSetting("snapToGrid", "0") === "1";
+snapBox.addEventListener("change", () => saveSetting("snapToGrid", snapBox.checked ? "1" : "0"));
+const snapToggle = el(
+  "label",
+  {
+    class: "snap-toggle",
+    title: "Windows land on grid lines (36ths of the workspace) when moved or resized. Hold Alt while dragging to do the opposite.",
+    hidden: "",
+  },
+  [snapBox, "Snap to grid"],
+);
 const stopAgentsButton = el(
   "button",
   { title: "Stop every Claude Code and Codex session, for example to update them; Resume starts each again" },
@@ -115,7 +116,7 @@ const tabStrip = new TabStrip({
     const id = randomId();
     const color = TAB_COLORS[(tabs.length + 6) % TAB_COLORS.length]!;
     const from = currentView().tab;
-    send({ t: "tab-create", id, name: `Tab ${tabs.length + 1}`, color, grid: from?.grid ?? "2x2", layout: from?.layout });
+    send({ t: "tab-create", id, name: `Tab ${tabs.length + 1}`, color, grid: from?.grid ?? "2x2" });
     tabStrip.renameOnArrival(id);
     showTab(id);
   },
@@ -156,7 +157,7 @@ if (!window.isSecureContext) {
     ),
   );
 }
-topbar.append(stopAgentsButton, resumeAgentsButton, layoutSelect, newButton, settingsButton);
+topbar.append(stopAgentsButton, resumeAgentsButton, snapToggle, newButton, settingsButton);
 
 stopAgentsButton.addEventListener("click", () => {
   const question =
@@ -198,12 +199,6 @@ function toast(message: string): void {
 const settings = createSettingsDialog(toast);
 settingsButton.addEventListener("click", () => settings.open());
 
-layoutSelect.addEventListener("change", () => {
-  const tab = currentView().tab;
-  if (!tab) return;
-  if (layoutSelect.value === "windows") switchToWindows(tab);
-  else if (GRID_PATTERN.test(layoutSelect.value)) send({ t: "tab-update", id: tab.id, grid: layoutSelect.value, layout: "grid" });
-});
 new ResizeObserver(() => layoutGrid()).observe(grid);
 // A page in the background stops receiving output after a while. Browsers throttle or
 // freeze background pages, and catching up on minutes of agent output when coming back
@@ -236,24 +231,6 @@ window.addEventListener("hashchange", () => render());
 
 function gridOf(tab: TabView | null): Grid {
   return parseGrid(tab?.grid ?? "") ?? { rows: 2, cols: 2 };
-}
-
-/**
- * Lays the tab out as windows, each where its tile is now, stacked in creation order. The
- * frames go first, so that when the layout change arrives every window is already placed.
- */
-function switchToWindows(tab: TabView): void {
-  const bounds = grid.getBoundingClientRect();
-  const workspace = { width: grid.clientWidth, height: grid.clientHeight };
-  if (workspace.width >= 10 && workspace.height >= 10) {
-    let z = 0;
-    for (const [id, tile] of tiles) {
-      const rect = tile.root.getBoundingClientRect();
-      const relative = { left: rect.left - bounds.left, top: rect.top - bounds.top, width: rect.width, height: rect.height };
-      send({ t: "session-frame", session: id, frame: rectToFrame(relative, workspace, ++z) });
-    }
-  }
-  send({ t: "tab-update", id: tab.id, layout: "windows" });
 }
 
 /** Brings a window in front of the others in its tab; the stacking is part of the shared layout. */
@@ -375,6 +352,7 @@ class Tile {
       // The terminal follows the window's size while it can be resized; otherwise only the window changes.
       cell: () => (this.resizable() ? (this.view?.cellSize() ?? null) : null),
       size: () => ({ cols: this.session.cols, rows: this.session.rows }),
+      snap: () => snapBox.checked,
       commit: (frame, cells) => {
         this.setFrame(frame); // at once; the server's broadcast confirms it for every browser
         send({ t: "session-frame", session: this.session.id, frame });
@@ -435,7 +413,7 @@ class Tile {
       notify: toast,
     });
     this.view.mount(this.body);
-    this.view.setResizable(this.resizable(), this.frame === null);
+    this.view.setResizable(this.resizable());
     send({ t: "sub", session: this.session.id });
   }
 
@@ -465,7 +443,7 @@ class Tile {
     }
     this.root.classList.toggle("window", frame !== null);
     this.chrome.setEnabled(frame !== null);
-    this.view?.setResizable(this.resizable(), frame === null);
+    this.view?.setResizable(this.resizable());
   }
 
   update(session: SessionView): void {
@@ -486,7 +464,7 @@ class Tile {
           ? "Columns × rows."
           : "Columns × rows. Resizing needs a restarted daemon: spectraweaver down --all (every session ends), then spectraweaver up."
     }\n${session.cwd}`;
-    this.view?.setResizable(resizable, this.frame === null);
+    this.view?.setResizable(resizable);
     const exited = session.exited;
     this.exitBadge.hidden = !exited;
     if (exited) this.exitBadge.textContent = exited.signal ? `exited (${exited.signal})` : `exited ${exited.code ?? ""}`;
@@ -541,8 +519,9 @@ function render(): void {
   const visibleIds = new Set(visible.map((session) => session.id));
   // As windows, placed terminals sit where their frames say; the others take a free cell of the
   // tab's grid, or cascade, worked out the same way in every browser.
-  const windowed = !view.focus && layoutOf(view.tab) === "windows";
+  const windowed = !view.focus; // focusing one terminal shows it alone, filling the page
   grid.classList.toggle("windows", windowed);
+  snapToggle.hidden = !windowed;
   const placed: Frame[] = windowed ? visible.flatMap((session) => (session.frame ? [session.frame] : [])) : [];
   let unplaced = 0;
 
@@ -578,8 +557,6 @@ function render(): void {
     }
   });
 
-  if (view.tab) layoutSelect.value = layoutOf(view.tab) === "windows" ? "windows" : view.tab.grid;
-  layoutSelect.disabled = view.focus !== null;
   empty.hidden = visible.length > 0;
   empty.textContent = view.focus
     ? "This terminal no longer exists."

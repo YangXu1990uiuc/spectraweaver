@@ -4,7 +4,7 @@
 
 import type { Frame } from "../common/protocol.ts";
 import type { Area } from "./sizing.ts";
-import { DRAG_THRESHOLD_PX, type Edges, moveRect, type Rect, rectToFrame, resizeRect } from "./windows.ts";
+import { DRAG_THRESHOLD_PX, type Edges, moveRect, type Rect, rectToFrame, resizeRect, snapMove } from "./windows.ts";
 
 /** What a window's chrome needs from the tile it belongs to. */
 export interface WindowChromeOptions {
@@ -24,6 +24,8 @@ export interface WindowChromeOptions {
   cell(): Area | null;
   /** The terminal's size now, for the badge and the axes a handle leaves alone. */
   size(): { cols: number; rows: number };
+  /** Whether "Snap to grid" is on. Holding Alt during a drag does the opposite. */
+  snap(): boolean;
   /** A drag ended on a new place or size; with `cells`, the terminal is to take that size too. */
   commit(frame: Frame, cells: { cols: number; rows: number } | null): void;
   /** A move was cancelled (Escape) or went nowhere: lay the window out from its frame again. */
@@ -50,7 +52,8 @@ const SIDES: Record<Side, Edges> = {
  * moves it, the edges and corners resize it, as a window manager does. A move shows live; a
  * resize shows a dashed outline with the size it will take (whole cells at the current text
  * size when the terminal resizes with the window) and applies on release. Pointer capture keeps
- * a drag going when the pointer leaves the window; Escape cancels.
+ * a drag going when the pointer leaves the window; Escape cancels. With snapping, the window
+ * lands on grid lines, which the workspace shows during the drag.
  */
 export class WindowChrome {
   private readonly handles: HTMLDivElement[] = [];
@@ -96,6 +99,17 @@ export class WindowChrome {
     this.ghost.remove();
   }
 
+  /** Whether this moment of a drag snaps, and shows the grid lines if so. */
+  private snapping(event: PointerEvent): boolean {
+    const snap = this.options.snap() !== event.altKey;
+    this.options.workspace.classList.toggle("snapping", snap);
+    return snap;
+  }
+
+  private endSnapping(): void {
+    this.options.workspace.classList.remove("snapping");
+  }
+
   private workspaceArea(): Area | null {
     const { clientWidth: width, clientHeight: height } = this.options.workspace;
     return width >= 10 && height >= 10 ? { width, height } : null;
@@ -133,6 +147,7 @@ export class WindowChrome {
         document.body.classList.add("moving-window");
       }
       rect = moveRect(start, travel, workspace);
+      if (this.snapping(e)) rect = snapMove(rect, workspace);
       root.style.left = `${rect.left}px`;
       root.style.top = `${rect.top}px`;
     };
@@ -144,6 +159,7 @@ export class WindowChrome {
       window.removeEventListener("keydown", key, true);
       if (header.hasPointerCapture(event.pointerId)) header.releasePointerCapture(event.pointerId);
       document.body.classList.remove("moving-window");
+      this.endSnapping();
       this.dragging = false;
       if (moved) {
         if (commit && (rect.left !== start.left || rect.top !== start.top)) {
@@ -209,7 +225,8 @@ export class WindowChrome {
       this.ghost.hidden = false;
     };
     const move = (e: PointerEvent) => {
-      result = resizeRect(start, { dx: e.clientX - origin.x, dy: e.clientY - origin.y }, edges, limits);
+      const travel = { dx: e.clientX - origin.x, dy: e.clientY - origin.y };
+      result = resizeRect(start, travel, edges, { ...limits, snap: this.snapping(e) });
       show();
     };
     const finish = (commit: boolean) => {
@@ -220,6 +237,7 @@ export class WindowChrome {
       window.removeEventListener("keydown", key, true);
       if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
       document.body.classList.remove("resizing");
+      this.endSnapping();
       this.ghost.hidden = true;
       this.dragging = false;
       const { rect, cells } = result;

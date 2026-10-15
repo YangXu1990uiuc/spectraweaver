@@ -346,7 +346,6 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
             name: String(message.name ?? ""),
             color: String(message.color ?? ""),
             grid: String(message.grid ?? ""),
-            layout: message.layout,
           })
         ) {
           broadcastTabs();
@@ -358,7 +357,6 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
             name: typeof message.name === "string" ? message.name : undefined,
             color: typeof message.color === "string" ? message.color : undefined,
             grid: typeof message.grid === "string" ? message.grid : undefined,
-            layout: message.layout,
           })
         ) {
           broadcastTabs();
