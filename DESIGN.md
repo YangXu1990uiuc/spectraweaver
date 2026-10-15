@@ -41,7 +41,7 @@ It is built for running many CLI coding agents in parallel (Claude Code, Codex C
 
 1. **Start it.** On the server, `spectraweaver up` starts the daemon and the server and prints a login link. After setting a password (`spectraweaver passwd`, or in Settings), a bookmark of the plain URL is enough.
 2. **Open it.** Open the link through an SSH tunnel or HTTPS, preferably as an app window (§6.3).
-3. **Create sessions.** Make a tab per workstream, such as "agents" and "infra", each with its own arrangement of windows and URL. Click "New terminal": the size is pre-filled to fit a cell of the tab's grid, where the new window appears; add a working directory and an optional startup command. A tile appears; give it a banner: "auth refactor".
+3. **Create sessions.** Make a tab per workstream, such as "agents" and "infra", each with its own arrangement of windows and URL. Click "+ New terminal": a window opens at once in a free spot, in the directory of the terminal used last ("▾" also asks for a directory, a startup command or a size). Give it a banner: "auth refactor".
 4. **Switch devices.** Run `claude` in a few tiles, close the laptop, and open the page on the desktop. Everything is where it was. One tile shows **needs input**; click it and answer.
 5. **Survive a reboot.** After a server reboot, dead sessions show their last screen with a **Revive** button, which runs `claude --resume <id>` in the same directory.
 
@@ -194,7 +194,8 @@ Dragging a window's edge is the explicit resize of §4.3, not a viewing action: 
 
 ### 4.3 Choosing a size
 
-- **Pre-filled, never forced.** The new-terminal dialog has two number fields, columns and rows, pre-filled with a recommendation, and a text size in pixels that describes the same choice in one tile: editing either sets the other. The user edits the numbers directly.
+- **One click, or a dialog.** "+ New terminal" creates a terminal at once: in the first free cell of the tab's grid (else cascaded), at the recommended size below, starting in the current directory of the terminal focused last in the tab (the server reads the shell's directory from `/proc`, or with `lsof` on macOS). "▾" opens the new-terminal dialog, for a working directory, a startup command or an exact size.
+- **Pre-filled, never forced.** The dialog has two number fields, columns and rows, pre-filled with a recommendation, and a text size in pixels that describes the same choice in one tile: editing either sets the other. The user edits the numbers directly.
 - **The recommendation** is the shape of one tile in the current tab's grid at the user's preferred text size.
   - The preferred text size starts at 13 px. Each time a terminal is created, the text size its chosen size implies becomes the new preference, so recommendations follow the user across layouts.
   - Cells are modelled the way xterm.js's WebGL renderer draws them: glyph advance and line height scale with the font size, then snap to whole device pixels (width down, height up). Ignoring the snapping overestimates the width by up to a pixel per column.

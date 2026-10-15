@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readlinkSync } from "node:fs";
 
 /** The program in the foreground of a terminal: the job the shell runs, or the shell itself. */
 export interface ForegroundProcess {
@@ -20,6 +20,17 @@ export interface ForegroundProcess {
 export function foregroundProcess(shellPid: number): ForegroundProcess | null {
   try {
     return process.platform === "linux" ? fromProc(shellPid) : fromPs(shellPid);
+  } catch {
+    return null;
+  }
+}
+
+/** A process's current directory: /proc on Linux, lsof elsewhere (macOS). Null if it cannot tell. */
+export function processCwd(pid: number): string | null {
+  try {
+    if (process.platform === "linux") return readlinkSync(`/proc/${pid}/cwd`);
+    const out = Bun.spawnSync(["lsof", "-a", "-p", String(pid), "-d", "cwd", "-Fn"]).stdout.toString();
+    return out.split("\n").find((line) => line.startsWith("n"))?.slice(1) || null;
   } catch {
     return null;
   }

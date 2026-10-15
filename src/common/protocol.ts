@@ -174,7 +174,8 @@ export type ClientMessage =
   | { t: "unsub"; session: string }
   | { t: "input"; session: string; data: string; binary?: boolean }
   | { t: "focus"; session: string; focused: boolean }
-  | { t: "create"; cols: number; rows: number; cwd?: string; cmd?: string; tab?: string }
+  /** Without `cwd`, `cwdOf` starts it in the current directory of that session's shell. */
+  | { t: "create"; cols: number; rows: number; cwd?: string; cwdOf?: string; cmd?: string; tab?: string }
   | { t: "close"; session: string }
   | { t: "resize"; session: string; cols: number; rows: number }
   | { t: "banner"; session: string; banner: string }

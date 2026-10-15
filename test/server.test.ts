@@ -4,8 +4,9 @@
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { userInfo } from "node:os";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
+import { join } from "node:path";
 import type { Paths } from "../src/common/paths.ts";
 import {
   type ClientMessage,
@@ -16,6 +17,7 @@ import {
   type TabView,
 } from "../src/common/protocol.ts";
 import { type DaemonHandle, startDaemon } from "../src/daemon/daemon.ts";
+import { processCwd } from "../src/server/foreground.ts";
 import { type ServerHandle, startServer } from "../src/server/server.ts";
 import { TEST_SHELL, tempPaths, until } from "./helpers.ts";
 
@@ -348,4 +350,28 @@ test("if the token file goes missing, nothing signs in (no empty-token fallback)
     writeFileSync(paths.tokenFile, token, { mode: 0o600 });
   }
   expect((await fetch(`${base}/api/me`, { headers: { cookie } })).status).toBe(200);
+});
+
+test("a new terminal can start in the current directory of another one", async () => {
+  const tab = await Tab.open();
+  await tab.next((m) => m.t === "sessions");
+  tab.send({ t: "create", cols: 80, rows: 24 });
+  const { session: first } = await tab.next<{ t: "session"; session: SessionView }>((m) => m.t === "session");
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "sw-cwd-")));
+  tab.send({ t: "input", session: first.id, data: `cd ${dir}\r` });
+  await until(() => processCwd(first.pid) === dir, "the shell to change directory");
+
+  tab.send({ t: "create", cols: 80, rows: 24, cwdOf: first.id });
+  const { session: second } = await tab.next<{ t: "session"; session: SessionView }>(
+    (m) => m.t === "session" && m.session.id !== first.id,
+  );
+  expect(second.cwd).toBe(dir);
+  await until(() => processCwd(second.pid) === dir, "the new shell to start there");
+
+  for (const session of [first, second]) {
+    tab.send({ t: "close", session: session.id });
+    await tab.next((m) => m.t === "removed" && m.session === session.id);
+  }
+  tab.close();
+  rmSync(dir, { recursive: true, force: true });
 });
