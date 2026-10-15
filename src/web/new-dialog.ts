@@ -24,6 +24,17 @@ export interface NewTerminalContext {
 const MAX_COLS = 1000;
 const MAX_ROWS = 500;
 
+/** The text size the user prefers, learned from the sizes they create. */
+export function preferredTextPx(): number {
+  const value = Number(loadSetting("textPx", String(DEFAULT_TEXT_PX)));
+  return Number.isFinite(value) ? Math.min(MAX_TEXT_PX, Math.max(MIN_TEXT_PX, value)) : DEFAULT_TEXT_PX;
+}
+
+/** The size that fills a tile (or a new window) at the preferred text size: what the dialog offers first. */
+export function recommendedSize(tile: Area, font: FontMetrics): { cols: number; rows: number } {
+  return recommendSize(tile, font, preferredTextPx());
+}
+
 /**
  * The size fields are pre-filled with a recommendation: the shape of the current layout's
  * tiles at the user's preferred text size, which is learned from the sizes they create.
@@ -63,10 +74,6 @@ export function createNewTerminalDialog(context: NewTerminalContext): {
   let tile = context.tile();
   let font = context.font();
 
-  const preferredTextPx = () => {
-    const value = Number(loadSetting("textPx", String(DEFAULT_TEXT_PX)));
-    return Number.isFinite(value) ? Math.min(MAX_TEXT_PX, Math.max(MIN_TEXT_PX, value)) : DEFAULT_TEXT_PX;
-  };
   const size = (): [number, number] | null => {
     const c = Number(cols.value);
     const r = Number(rows.value);

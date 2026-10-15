@@ -510,7 +510,24 @@ body.resizing {
 }
 
 /* The header's size reads like the other metadata and opens the resize dialog. */
-/* "Snap to grid", shown while the tab is laid out as windows. */
+/* "+ New terminal" and its "▾" for the dialog, as one button. */
+.split-btn {
+  display: flex;
+}
+
+.split-btn > button:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.split-btn > button:last-child {
+  padding: 3px 7px;
+  border-left-color: rgba(255, 255, 255, 0.3);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* "Snap to grid" in the top bar. */
 .snap-toggle {
   display: flex;
   align-items: center;

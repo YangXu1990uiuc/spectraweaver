@@ -15,7 +15,7 @@ import {
 import { adoptFormerSettings, el, type Grid, loadSetting, parseGrid, randomId, saveSetting } from "./dom.ts";
 import { detectPlatform } from "./keymap.ts";
 import { createSettingsDialog, ensureLogin } from "./login.ts";
-import { createNewTerminalDialog } from "./new-dialog.ts";
+import { createNewTerminalDialog, recommendedSize } from "./new-dialog.ts";
 import { createResizeDialog } from "./resize-dialog.ts";
 import { measureFont } from "./sizing.ts";
 import { SESSION_DRAG_TYPE, TabStrip } from "./tabs.ts";
@@ -82,7 +82,17 @@ function showTab(id: string): void {
 
 const app = document.getElementById("app") as HTMLDivElement;
 const statusDot = el("span", { class: "status down", title: "Connecting…" });
-const newButton = el("button", { class: "primary" }, ["+ New terminal"]);
+const newButton = el(
+  "button",
+  { class: "primary", title: "A new terminal in a free spot, in the directory of the terminal you last used" },
+  ["+ New terminal"],
+);
+const newMoreButton = el(
+  "button",
+  { class: "primary", title: "New terminal with a directory, a startup command or an exact size", "aria-label": "New terminal with options" },
+  ["▾"],
+);
+const newButtons = el("span", { class: "split-btn" }, [newButton, newMoreButton]);
 // Per browser, like zoom: some like windows on grid lines, others free.
 const snapBox = el("input", { type: "checkbox" });
 snapBox.checked = loadSetting("snapToGrid", "0") === "1";
@@ -157,7 +167,7 @@ if (!window.isSecureContext) {
     ),
   );
 }
-topbar.append(stopAgentsButton, resumeAgentsButton, snapToggle, newButton, settingsButton);
+topbar.append(stopAgentsButton, resumeAgentsButton, snapToggle, newButtons, settingsButton);
 
 stopAgentsButton.addEventListener("click", () => {
   const question =
@@ -279,7 +289,24 @@ const newDialog = createNewTerminalDialog({
     send({ t: "create", ...request, tab: currentView().tab?.id });
   },
 });
-newButton.addEventListener("click", () => newDialog.open());
+newButton.addEventListener("click", () => createTerminal());
+newMoreButton.addEventListener("click", () => newDialog.open());
+
+/** The terminal focused last, whose directory a new terminal starts in. */
+let lastFocused: string | null = null;
+
+/**
+ * A new terminal at once, without the dialog: it takes a free cell of the tab's grid (or
+ * cascades), sized to fill that window at the preferred text size, and starts in the current
+ * directory of the terminal used last in this tab.
+ */
+function createTerminal(): void {
+  const tab = currentView().tab?.id;
+  const { cols, rows } = recommendedSize(tileArea().area, measureFont(FONT_FAMILY));
+  const from = lastFocused !== null && sessions.get(lastFocused)?.tab === tab ? lastFocused : undefined;
+  createdHereAt = Date.now();
+  send({ t: "create", cols, rows, tab, cwdOf: from });
+}
 const resizeDialog = createResizeDialog();
 
 function setStatus(): void {
@@ -407,6 +434,7 @@ class Tile {
       useWebgl,
       send,
       onFocusChange: (focused) => {
+        if (focused) lastFocused = this.session.id;
         this.root.classList.toggle("focused", focused);
         if (focused && belled.delete(this.session.id)) render();
       },

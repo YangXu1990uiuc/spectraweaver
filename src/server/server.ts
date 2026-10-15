@@ -31,7 +31,7 @@ import {
 import { type AgentControlDeps, resumeAgent, stopAgent } from "./agent-control.ts";
 import { terminalText } from "./agents.ts";
 import { DaemonClient } from "./daemon-client.ts";
-import { foregroundProcess } from "./foreground.ts";
+import { foregroundProcess, processCwd } from "./foreground.ts";
 import { MetaStore } from "./meta.ts";
 
 export interface ServerOptions {
@@ -278,12 +278,15 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         return;
       case "create": {
         const tab = typeof message.tab === "string" && meta.hasTab(message.tab) ? message.tab : undefined;
+        let cwd = typeof message.cwd === "string" ? message.cwd : undefined;
+        const source = typeof message.cwdOf === "string" ? sessions.get(message.cwdOf) : undefined;
+        if (!cwd && source && !source.exited) cwd = processCwd(source.pid) ?? undefined;
         daemon.request(
           {
             op: "create",
             cols: Number(message.cols),
             rows: Number(message.rows),
-            cwd: typeof message.cwd === "string" ? message.cwd : undefined,
+            cwd,
             cmd: typeof message.cmd === "string" ? message.cmd : undefined,
             tag: tab,
           },
