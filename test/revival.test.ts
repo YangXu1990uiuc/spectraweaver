@@ -3,7 +3,7 @@
 // Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClientMessage, Conversation, LostSession, ServerMessage, SessionView } from "../src/common/protocol.ts";
@@ -32,7 +32,8 @@ beforeAll(async () => {
   temp = tempPaths();
   cleanup = temp.cleanup;
   // Fake `claude` and `codex` programs on the sessions' PATH, with their own home directories.
-  bin = mkdtempSync(join(tmpdir().length > 40 ? "/tmp" : tmpdir(), "sw-bin-"));
+  // The real path: on macOS /tmp is a link to /private/tmp, which is what processes report as their directory.
+  bin = realpathSync(mkdtempSync(join(tmpdir().length > 40 ? "/tmp" : tmpdir(), "sw-bin-")));
   for (const name of ["claude", "codex"]) {
     writeFileSync(join(bin, name), `#!/usr/bin/env bun\nimport ${JSON.stringify(fixture("fake-agent.ts"))};\n`);
     chmodSync(join(bin, name), 0o755);

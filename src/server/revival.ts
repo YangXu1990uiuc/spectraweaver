@@ -146,15 +146,20 @@ function processStartMs(pid: number): number | null {
   }
 }
 
-/** Child processes, grandchildren and so on (Linux only): npm's codex runs the real one as a child. */
+/** Child processes, grandchildren and so on: npm's codex runs the real one as a child. */
 function descendants(pid: number, depth = 3): number[] {
   if (depth === 0) return [];
   const children: number[] = [];
   try {
-    for (const task of readdirSync(`/proc/${pid}/task`)) {
-      for (const child of readFileSync(`/proc/${pid}/task/${task}/children`, "utf8").split(" ")) {
-        if (child.trim()) children.push(Number(child));
+    if (process.platform === "linux") {
+      for (const task of readdirSync(`/proc/${pid}/task`)) {
+        for (const child of readFileSync(`/proc/${pid}/task/${task}/children`, "utf8").split(" ")) {
+          if (child.trim()) children.push(Number(child));
+        }
       }
+    } else {
+      const out = Bun.spawnSync(["pgrep", "-P", String(pid)]).stdout.toString();
+      for (const child of out.split("\n")) if (child.trim()) children.push(Number(child));
     }
   } catch {
     return [];
@@ -162,8 +167,13 @@ function descendants(pid: number, depth = 3): number[] {
   return children.flatMap((child) => [child, ...descendants(child, depth - 1)]);
 }
 
+/** The paths of the files a process has open: /proc on Linux, lsof elsewhere (macOS). */
 function openFiles(pid: number): string[] {
   try {
+    if (process.platform !== "linux") {
+      const out = Bun.spawnSync(["lsof", "-p", String(pid), "-Fn"]).stdout.toString();
+      return out.split("\n").flatMap((line) => (line.startsWith("n/") ? [line.slice(1)] : []));
+    }
     return readdirSync(`/proc/${pid}/fd`).flatMap((fd) => {
       try {
         return [readlinkSync(`/proc/${pid}/fd/${fd}`)];

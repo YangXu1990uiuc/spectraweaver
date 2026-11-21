@@ -84,6 +84,12 @@ test("`spectraweaver autostart` writes, reports and removes its line through cro
     return { code: result.exitCode, out: result.stdout.toString() + result.stderr.toString() };
   };
 
+  if (process.platform !== "linux") {
+    // Only Linux runs @reboot reliably; elsewhere the command says so and leaves the crontab alone.
+    expect(cli("on")).toMatchObject({ code: 1, out: expect.stringContaining("launchd") });
+    expect(readFileSync(file, "utf8")).toBe(theirs);
+    return;
+  }
   expect(cli().out).toContain("not started at boot");
   expect(cli("on")).toMatchObject({ code: 0, out: expect.stringContaining("autostart on") });
   const installed = readFileSync(file, "utf8");
