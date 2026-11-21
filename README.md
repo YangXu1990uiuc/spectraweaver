@@ -60,6 +60,14 @@ On a shared server, every user gets their own port (the first free one from 7777
 
 To stay off the network, run plain `spectraweaver up` and reach it through SSH instead (see [Reaching it from your laptop](#reaching-it-from-your-laptop)).
 
+Then have it start again whenever the server reboots:
+
+```sh
+spectraweaver autostart on
+```
+
+This adds one `@reboot` line to your crontab on this host (your other crontab lines stay as they are; `spectraweaver autostart off` removes it). At boot, cron runs `spectraweaver up` in your login shell, so terminals get the same `PATH` as when you sign in, and it keeps trying for 5 minutes if your home directory or the network comes up late. Its output goes to `autostart.log` in the state directory.
+
 **5. Open it on your laptop.** Open the address, sign in, and bookmark it. A normal browser tab keeps Ctrl+W, Ctrl+T and Ctrl+N for itself; for them to reach the terminal, open the page as an app window. On Windows, press Win+R and run:
 
 ```text
@@ -68,7 +76,7 @@ msedge --app=http://devbox:7778/
 
 For a desktop shortcut, give the full path: `"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --app=http://devbox:7778/`. Chrome works the same way (`chrome --app=…`), as does `google-chrome --app=…` on Linux.
 
-Closing the browser leaves everything running. After the server reboots, run `spectraweaver up` again and press **↻ Restore** to bring your terminals back (see [Using it](#using-it)). To update, see [Upgrading](#upgrading).
+Closing the browser leaves everything running. After the server reboots, SpectraWeaver starts again by itself (with `autostart on`; otherwise run `spectraweaver up`); press **↻ Restore** to bring your terminals back (see [Using it](#using-it)). To update, see [Upgrading](#upgrading).
 
 ### Reaching it from your laptop
 
@@ -124,7 +132,8 @@ SpectraWeaver uses no file locks and no SQLite, the usual sources of NFS trouble
 |---|---|
 | `spectraweaver up [--port N] [--allow-host NAME]` | Start the daemon and the server in the background; later runs remember the options. (`--host ADDR --allow-remote` listens beyond localhost; read [SECURITY.md](SECURITY.md) first.) |
 | `spectraweaver down [--all]` | Stop the server. `--all` also stops the daemon, which ends every session. |
-| `spectraweaver status` | Show what is running. |
+| `spectraweaver status` | Show what is running, and whether it starts at boot. |
+| `spectraweaver autostart [on \| off]` | Start SpectraWeaver when this host boots (a crontab `@reboot` line), or stop doing so. |
 | `spectraweaver passwd [--clear]` | Set (or remove) the password for signing in from the browser. |
 | `spectraweaver token [--rotate]` | Print the login token and link; `--rotate` replaces the token and signs out every browser. |
 | `spectraweaver new [--size 120x36] [--cwd DIR] [-- COMMAND]` | Create a session from the command line. |

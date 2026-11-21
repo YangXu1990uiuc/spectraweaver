@@ -5,8 +5,9 @@
 
 import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
-import { homedir, hostname, networkInterfaces } from "node:os";
+import { homedir, hostname, networkInterfaces, userInfo } from "node:os";
 import { join, resolve } from "node:path";
+import { autostartLine, findAutostart, readCrontab, withAutostart, writeCrontab } from "./autostart.ts";
 import { loadInstance, loadSettings, migrateOlderState, saveInstance, saveSettings } from "./common/config.ts";
 import { networkFilesystem, writeFileAtomic } from "./common/files.ts";
 import { isLoopbackAddress, pickFreePort, portIsFree } from "./common/net.ts";
@@ -39,6 +40,9 @@ Usage:
   spectraweaver down [--all]
                         stop the server; --all also stops the daemon, ending every session
   spectraweaver status    show what is running
+  spectraweaver autostart [on | off]
+                        start SpectraWeaver when this host boots (a crontab @reboot line);
+                        without on or off, say whether it does
   spectraweaver passwd [--clear]
                         set (or remove) the password for signing in from the browser
   spectraweaver token [--rotate]
@@ -385,6 +389,9 @@ async function cmdUp(args: string[]): Promise<void> {
     const byAddress = lanAddresses().map((address) => `http://${address}:${port}/`);
     if (byAddress.length > 0) console.log(`If the name does not resolve there, use ${byAddress.join(" or ")}`);
   }
+  if (process.platform === "linux" && autostartStatus(paths).startsWith("not started")) {
+    console.log("Tip: `spectraweaver autostart on` starts it again when this host reboots.");
+  }
 }
 
 async function cmdDown(args: string[]): Promise<void> {
@@ -423,6 +430,72 @@ async function cmdStatus(): Promise<void> {
   else console.log("server  not running");
   console.log(`login   ${existsSync(paths.passwordFile) ? "password or token" : "token (no password set)"}`);
   console.log(`state   ${paths.stateDir}`);
+  if (process.platform === "linux") console.log(`boot    ${autostartStatus(paths)}`);
+}
+
+/** What `spectraweaver autostart on` would put in the crontab for this checkout and Bun. */
+function plannedAutostart(paths: Paths): string {
+  const env: Record<string, string> = {};
+  for (const name of ["SPECTRAWEAVER_HOME", "SPECTRAWEAVER_CONFIG_DIR", "SPECTRAWEAVER_STATE_DIR"]) {
+    const value = process.env[name];
+    if (value) env[name] = resolve(expandHome(value));
+  }
+  let shell = process.env.SHELL || "/bin/sh";
+  try {
+    shell = userInfo().shell || shell;
+  } catch {
+    // no passwd entry (containers)
+  }
+  return autostartLine({ argv: selfArgv(["up"]), shell, env, log: join(paths.stateDir, "autostart.log") });
+}
+
+function autostartStatus(paths: Paths): string {
+  let installed: string | undefined;
+  try {
+    installed = findAutostart(readCrontab());
+  } catch (error) {
+    return `unknown: ${(error as Error).message}`;
+  }
+  if (!installed) return "not started at boot (`spectraweaver autostart on` does it)";
+  if (installed !== plannedAutostart(paths)) {
+    return "started at boot, but by a line written for another checkout or Bun; run `spectraweaver autostart on` again";
+  }
+  return "started at boot (crontab @reboot)";
+}
+
+async function cmdAutostart(args: string[]): Promise<void> {
+  const [action, extra] = parseFlags(args, []).rest;
+  if (extra !== undefined || (action !== undefined && action !== "on" && action !== "off")) {
+    fail("usage: spectraweaver autostart [on | off]");
+  }
+  if (process.platform !== "linux") {
+    fail("autostart uses cron's @reboot, which only Linux runs reliably; on macOS, use a launchd agent that runs `spectraweaver up`.");
+  }
+  const paths = resolvePaths();
+  if (action === undefined) {
+    console.log(`On ${hostname()}, SpectraWeaver is ${autostartStatus(paths)}.`);
+    return;
+  }
+  const crontab = readCrontab();
+  if (action === "off") {
+    if (!findAutostart(crontab)) {
+      console.log("autostart is already off");
+      return;
+    }
+    writeCrontab(withAutostart(crontab, null));
+    console.log(`autostart off: ${hostname()} no longer starts SpectraWeaver at boot`);
+    return;
+  }
+  // The boot line logs into the state directory; at boot, a missing one means it is not mounted yet.
+  ensurePrivateDir(paths.stateDir);
+  writeCrontab(withAutostart(crontab, plannedAutostart(paths)));
+  console.log(
+    `autostart on: when ${hostname()} boots, cron runs \`spectraweaver up\` in your login shell, so terminals\n` +
+      "get the same PATH as when you sign in. It retries for 5 minutes if the home directory or network is late.\n" +
+      `Log: ${join(paths.stateDir, "autostart.log")}\n` +
+      "After a reboot, open the page and press ↻ Restore to bring your terminals back.\n" +
+      "If you move this checkout or Bun, run `spectraweaver autostart on` again. Other hosts are not affected.",
+  );
 }
 
 async function cmdPasswd(args: string[]): Promise<void> {
@@ -616,6 +689,9 @@ try {
       break;
     case "status":
       await cmdStatus();
+      break;
+    case "autostart":
+      await cmdAutostart(args);
       break;
     case "passwd":
       await cmdPasswd(args);

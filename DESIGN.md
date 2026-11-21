@@ -92,8 +92,7 @@ One binary provides both processes plus the CLI (§11): `spectraweaver daemon`, 
 
 ### 3.2 Process lifecycle
 
-- **Services.** Where systemd is available, both processes run as `systemd --user` services, set up by `spectraweaver install-service`. `loginctl enable-linger` keeps them running after logout.
-  - Without systemd, `spectraweaver up` daemonizes with `setsid`.
+- **Starting.** `spectraweaver up` starts both processes detached, with `setsid`. `spectraweaver autostart on` has cron run it at boot (§10).
   - On distros with `KillUserProcesses=yes` (the upstream systemd default; Ubuntu ships `no`), processes started from an SSH login die at logout unless linger is enabled.
 - **Server restarts are free** (upgrades, crashes).
 - **Daemon restarts are never automatic** on upgrade.
@@ -453,7 +452,8 @@ A reboot, or `spectraweaver down --all`, ends every terminal. What matters most 
 - **The agents' files are not interfaces.** Only their steadiest parts are used: a conversation's id from its file name, its directory from a `cwd` field near the start, and recency from the file's time. Titles (Claude Code's `aiTitle`, `customTitle`, `summary`, `lastPrompt`; Codex's last `user_message`) only label lists, and a list falls back to the directory when they are missing. The resume commands are the agents' documented ones. Codex's SQLite state databases are not used. If Claude Code's per-process file goes away, ids still come from the conversation files (step 4).
 - **Recent conversations.** The same dialog lists the conversations written to in the last two weeks that a person started (not `claude -p`, SDK runs, subagents or `codex exec`) and no terminal, live or lost, is on, newest first, to open in new terminals with flags pre-filled from those each agent last ran with. This also recovers terminals lost before their notes existed.
 - **Manual by default.** Restoring starts every agent at once; most of them may not be wanted any more. A later, opt-in setting could restore automatically when the daemon starts.
-- **Later:** the last screen of each lost terminal (the daemon would save snapshots), and starting `spectraweaver up` at boot (a systemd user service with linger, or a crontab `@reboot` line).
+- **Starting at boot** is `spectraweaver autostart on` (§10).
+- **Later:** the last screen of each lost terminal (the daemon would save snapshots).
 
 ## 8. Agent awareness
 
@@ -566,8 +566,11 @@ Each Unix user runs their own instance; nothing is shared between users.
   - Linux: glibc 2.17 or later (musl builds for Alpine and others); kernel 3.10 or later (Bun recommends 5.6 or later).
   - macOS.
   - No root, no tmux, no Node.
-- **Install.** A binary from GitHub Releases plus an install script. `spectraweaver install-service` writes the `systemd --user` units (daemon and server) and explains linger.
-- **Upgrades.** Replace the binary and restart the server unit. Daemon upgrades need the user's confirmation (§3.2).
+- **Install.** A binary from GitHub Releases plus an install script.
+- **Starting at boot.** `spectraweaver autostart on` adds a line to the user's crontab: `@reboot`, run `spectraweaver up` in the user's login shell (so the daemon, and every terminal, gets the `PATH` a login gives, such as `~/.local/bin` from `~/.profile`), retrying every 10 s for 5 minutes, since an NFS home or the network can come up after cron. The line ends with a marker comment, so `on` replaces it and `off` removes it without touching the user's other lines; the state directory is created first, because the line logs into it.
+  - **Why cron, not a `systemd --user` unit:** `@reboot` needs neither root nor linger (`loginctl enable-linger`, which company machines often reserve to admins), and a crontab belongs to one host. A unit lives in `~/.config/systemd/user`, which hosts sharing an NFS home share: enabling it on one would start SpectraWeaver on every host at login.
+  - Terminals are not restored automatically after the boot; the page offers **↻ Restore** (§7.3).
+- **Upgrades.** Replace the binary and restart the server (`spectraweaver down && spectraweaver up`). Daemon upgrades end every terminal, so they wait for `spectraweaver down --all` (§3.2); **↻ Restore** brings the terminals back (§7.3).
 - **Memory.** A Bun process holding one 10k-line engine at 200 columns measured 112 MB RSS. Each additional session costs about 17 MB at 120 columns with 10k lines of scrollback.
 - **License: Apache-2.0.** The repo root holds `LICENSE` (the official text) and `NOTICE`.
   - Every source file starts with this header:
@@ -585,6 +588,7 @@ Each Unix user runs their own instance; nothing is shared between users.
 ```
 spectraweaver up [--host ADDR --allow-remote] | down | status
                                         start/stop daemon + server, show state
+spectraweaver autostart [on|off]          start at boot (crontab @reboot)
 spectraweaver daemon | server             service entry points
 spectraweaver new [--name N] [--size 120x36] [--cwd DIR] [-- CMD...]
 spectraweaver ls
@@ -593,7 +597,6 @@ spectraweaver banner [<session>] <text>   session defaults to $SPECTRAWEAVER_SES
 spectraweaver kill <session>
 spectraweaver hook <agent>                agent hook entry point (JSON on stdin)
 spectraweaver hooks install <agent>
-spectraweaver install-service
 spectraweaver passwd [--clear]            set or remove the browser sign-in password
 spectraweaver config                      show where config and state live
 spectraweaver config state-dir PATH|--reset  move this host's state, e.g. off a small or NFS home
