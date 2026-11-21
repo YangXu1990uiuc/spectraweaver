@@ -3,15 +3,7 @@
 // Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { expect, test } from "bun:test";
-import {
-  AGENTS,
-  carriedFlags,
-  detectAgent,
-  findNewHint,
-  programIndex,
-  resumeCommand,
-  terminalText,
-} from "../src/server/agents.ts";
+import { AGENTS, carriedFlags, detectAgent, programIndex, resumeCommand } from "../src/server/agents.ts";
 
 const claude = AGENTS.find((agent) => agent.name === "claude")!;
 const codex = AGENTS.find((agent) => agent.name === "codex")!;
@@ -48,32 +40,25 @@ test("resuming keeps the flags that matter and drops prompts and old resume opti
   ]);
 });
 
-test("the resume command is the agent's hint plus the kept flags, quoted for the shell", () => {
-  expect(resumeCommand("claude --resume abc", ["--model", "opus"])).toBe("claude --resume abc --model opus");
-  expect(resumeCommand("codex resume abc", ["--add-dir", "/my dir"])).toBe("codex resume abc --add-dir '/my dir'");
-});
-
-test("only a resume hint printed after the agent was asked to exit counts", () => {
+test("the resume command is the documented one plus the kept flags, quoted for the shell", () => {
   const id = "3f2a9c1e-0b7d-4e1a-9c2f-5d6e7f8a9b0c";
-  const before = terminalText(
-    "me@box:~/repo$ claude --resume 11111111-old --model opus\r\n" + // how this session was resumed
-      "\x1b[2mResume this session with:\r\nclaude --resume 00000000-older\x1b[0m\r\n", // an earlier exit
-  );
-  expect(findNewHint(claude, before, before)).toBeNull();
-  const after = `${before}\n\x1b[2mResume this session with:\nclaude --resume ${id}\x1b[0m\nme@box:~/repo$ `;
-  expect(findNewHint(claude, before, terminalText(after))).toBe(`claude --resume ${id}`);
-
-  // Named sessions and worktrees.
-  expect(findNewHint(claude, "", 'Resume this session with:\nclaude --resume "auth refactor"\n')).toBe(
-    'claude --resume "auth refactor"',
-  );
-  expect(findNewHint(claude, "", "claude --worktree feat --resume abc\n")).toBe("claude --worktree feat --resume abc");
-
-  // Codex, with the command on its own line or after the sentence.
-  expect(findNewHint(codex, "", `To continue this session, run:\ncodex resume ${id}\n`)).toBe(`codex resume ${id}`);
-  expect(findNewHint(codex, "", `To continue this session, run: codex resume ${id}\n`)).toBe(`codex resume ${id}`);
+  expect(resumeCommand(claude, id, ["--model", "opus"])).toBe(`claude --resume ${id} --model opus`);
+  expect(resumeCommand(codex, id, ["--add-dir", "/my dir"])).toBe(`codex resume ${id} --add-dir '/my dir'`);
+  // Without a known conversation, the latest one in the directory.
+  expect(resumeCommand(claude, null, [])).toBe("claude --continue");
+  expect(resumeCommand(codex, null, ["--yolo"])).toBe("codex resume --last --yolo");
 });
 
-test("terminal output becomes plain text", () => {
-  expect(terminalText("\x1b]0;title\x07\x1b[1;32mgreen\x1b[0m line  \r\n\x1b(Bnext")).toBe("green line\nnext");
+test("a conversation named on the command line is recognised", () => {
+  const id = "3f2a9c1e-0b7d-4e1a-9c2f-5d6e7f8a9b0c";
+  expect(claude.conversationInArgs(["--model", "opus", "--resume", id])).toBe(id);
+  expect(claude.conversationInArgs([`--resume=${id}`])).toBe(id);
+  expect(claude.conversationInArgs(["-r", id])).toBe(id);
+  expect(claude.conversationInArgs(["--session-id", id])).toBe(id);
+  expect(claude.conversationInArgs(["--resume", id, "--fork-session"])).toBeNull(); // a new id
+  expect(claude.conversationInArgs(["--resume", "auth refactor"])).toBeNull();
+  expect(claude.conversationInArgs(["fix the bug"])).toBeNull();
+  expect(codex.conversationInArgs(["--yolo", "resume", id])).toBe(id);
+  expect(codex.conversationInArgs(["resume", "--last"])).toBeNull();
+  expect(codex.conversationInArgs([id])).toBeNull(); // a prompt, not a resume
 });

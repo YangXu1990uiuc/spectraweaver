@@ -440,11 +440,6 @@ code {
   white-space: nowrap;
 }
 
-.badge.stopped {
-  color: #1b1b1b;
-  background: rgba(0, 0, 0, 0.16);
-}
-
 .badge.exited {
   background: #3a1d1d;
   color: var(--danger);
@@ -764,6 +759,106 @@ dialog section {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 8px;
+}
+
+.restore-dialog {
+  width: min(720px, calc(100vw - 32px));
+}
+
+.restore-dialog .hint {
+  margin-bottom: 8px;
+}
+
+.pick-list {
+  max-height: 34vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.pick-list:empty {
+  display: none;
+}
+
+.pick-list li + li {
+  border-top: 1px solid var(--border);
+}
+
+.pick-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.pick-list label:hover {
+  background: #262626;
+}
+
+.pick-list .swatch {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.pick-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pick-name,
+.pick-meta {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pick-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.agent-tag {
+  flex: none;
+  min-width: 48px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  text-align: center;
+  color: #1b1b1b;
+  background: #e8a87c;
+}
+
+.agent-tag.codex {
+  background: #9ccfd8;
+}
+
+.flag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.flag-row label {
+  display: flex;
+  flex: 1 1 240px;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.flag-row input {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
 }
 
 .toast {

@@ -68,7 +68,7 @@ msedge --app=http://devbox:7778/
 
 For a desktop shortcut, give the full path: `"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --app=http://devbox:7778/`. Chrome works the same way (`chrome --app=…`), as does `google-chrome --app=…` on Linux.
 
-Closing the browser leaves everything running. After the server reboots, run `spectraweaver up` again. To update, see [Upgrading](#upgrading).
+Closing the browser leaves everything running. After the server reboots, run `spectraweaver up` again and press **↻ Restore** to bring your terminals back (see [Using it](#using-it)). To update, see [Upgrading](#upgrading).
 
 ### Reaching it from your laptop
 
@@ -94,7 +94,9 @@ Closing the browser leaves everything running. After the server reboots, run `sp
 - **Text size:** Ctrl/Cmd + `=` / `-` / `0`, or Ctrl + mouse wheel. Below 100% only the font changes and the rest of the tile stays blank; 100% fills the tile. Pressing Ctrl + `=` at 100% makes the text larger still by giving the terminal fewer columns and rows (a resize: the program is told and redraws), so a terminal whose text has become too small is read again in a few presses.
 - **Focus one terminal:** ⤢ on its tile. ↗ opens it in its own window.
 - **Attention:** when a terminal rings the bell, its tile, its tab and the browser tab title are marked until you look at it.
-- **Updating agents:** ⏸ Stop agents makes every Claude Code and Codex session exit, as with Ctrl+C pressed twice (a task in progress is interrupted), and remembers how to resume each. Update them, then press ▶ Resume agents: each starts again in its terminal on the same conversation, keeping flags such as `--dangerously-skip-permissions` and `--model`. A tile shows ⏸ while its agent waits.
+- **Restore after a reboot:** a reboot, or `spectraweaver down --all`, ends every terminal. SpectraWeaver keeps note of each one while it runs (tab, window, size, directory, and the Claude Code or Codex conversation in it), so afterwards **↻ Restore N** in the top bar opens them again where they were, each agent resuming the same conversation with flags such as `--dangerously-skip-permissions` and `--model`. An agent comes back at its prompt; tell it to continue. A plain shell comes back in its directory; whatever ran in it does not restart. **Forget** drops the ones you no longer need.
+- **Resume a recent conversation:** **↻ Restore** also lists the Claude Code and Codex conversations of the last two weeks that no terminal is on, read from the agents' own files; tick some and **Open** them in new terminals.
+- **Updating Claude Code or Codex:** `spectraweaver down --all`, update them, `spectraweaver up`, then **↻ Restore**.
 - **Copy and paste** follow VS Code on each OS:
   - Windows: Ctrl+C copies when text is selected (otherwise it interrupts the program), and Ctrl+V pastes.
   - Linux: Ctrl+Shift+C and Ctrl+Shift+V.
@@ -141,7 +143,7 @@ bun install
 spectraweaver down && spectraweaver up
 ```
 
-Then reload the page. This restarts only the web server, which picks up the new UI and server code; sessions keep running. The daemon is replaced only by `spectraweaver down --all`, which ends every session, so do that when nothing important is running.
+Then reload the page. This restarts only the web server, which picks up the new UI and server code; sessions keep running. The daemon is replaced only by `spectraweaver down --all`, which ends every session; afterwards **↻ Restore** opens them again, resuming their agents' conversations, but programs other than Claude Code and Codex start over.
 
 ## How it works
 

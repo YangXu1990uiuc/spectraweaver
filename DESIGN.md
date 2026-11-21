@@ -43,7 +43,7 @@ It is built for running many CLI coding agents in parallel (Claude Code, Codex C
 2. **Open it.** Open the link through an SSH tunnel or HTTPS, preferably as an app window (§6.3).
 3. **Create sessions.** Make a tab per workstream, such as "agents" and "infra", each with its own arrangement of windows and URL. Click "+ New terminal": a window opens at once in a free spot, in the directory of the terminal used last ("▾" also asks for a directory, a startup command or a size). Give it a banner: "auth refactor".
 4. **Switch devices.** Run `claude` in a few tiles, close the laptop, and open the page on the desktop. Everything is where it was. One tile shows **needs input**; click it and answer.
-5. **Survive a reboot.** After a server reboot, dead sessions show their last screen with a **Revive** button, which runs `claude --resume <id>` in the same directory.
+5. **Survive a reboot.** After a server reboot, **↻ Restore** opens every terminal again in its tab, window and directory, and runs `claude --resume <id>` where Claude Code ran (§7.3).
 
 ## 2. Key decisions
 
@@ -87,8 +87,8 @@ One binary provides both processes plus the CLI (§11): `spectraweaver daemon`, 
   - The ring buffer, the raw log, and the terminal engine state.
 - **Server: everything presentational.**
   - Banners, layouts, zoom levels, settings.
-  - Status, revive commands, and agent metadata learned from hooks.
-- **Restarts.** Restarting the server loses nothing. Restarting the daemon ends running processes; §3.2 covers how that is handled.
+  - Status, what would restore each terminal (§7.3), and agent metadata.
+- **Restarts.** Restarting the server loses nothing. Restarting the daemon ends running processes; §3.2 covers how that is handled, and §7.3 how the terminals come back.
 
 ### 3.2 Process lifecycle
 
@@ -119,7 +119,7 @@ Company home directories are often small and shared over NFS by several hosts, s
 - **A host's state directory holds:**
   - `daemon.sock`, `daemon.pid`, `server.json`, and the daemon and server logs (rotated at 5 MB);
   - `instance.json`: the instance id (names the login cookie) and the remembered port and host;
-  - `meta.json`: tabs, banners and which tab each session belongs to;
+  - `meta.json`: tabs, and for each session its banner, colour, tab, window, and what would restore it (§7.3);
   - `sessions/<id>/`, with log segments and the last snapshot (later; potentially large, hence the movable state directory).
 - **Moving state.** `spectraweaver config state-dir` refuses while SpectraWeaver runs (the running daemon would be lost track of) and copies the tabs and instance settings to the new place.
 - **Older directories.** Earlier versions kept state directly in the state base (the flat layout), and the project was first called workstreams (`~/.config/workstreams/`, `~/.local/state/workstreams/`). A daemon started in an older directory keeps using it while it runs, so upgrading only the server keeps every session. `up` copies the former config directory rather than moving it, because other hosts sharing it may still run the old version. Once no daemon runs in an older state directory, `up` moves this host's `meta.json` and `instance.json` out of it.
@@ -136,7 +136,7 @@ Company home directories are often small and shared over NFS by several hosts, s
 - **Framing.** Frames on the Unix socket are `u32 length | u8 kind | payload`.
   - Kind 1 is a JSON control message.
   - Kind 2 is output: session id, u64 stream offset, raw bytes.
-- **Handshake:** `{"hello": {"protocol": 1, "daemonVersion": "…"}}`. The reply names the requests the daemon answers beyond protocol 1's first set (`features`, e.g. `["resize"]`), so a newer server or CLI can tell an older daemon what it needs; an unknown request is answered with an error rather than ignored.
+- **Handshake:** `{"hello": {"protocol": 1, "daemonVersion": "…"}}`. The reply names the requests the daemon answers beyond protocol 1's first set (`features`, e.g. `["resize"]`), so a newer server or CLI can tell an older daemon what it needs; an unknown request is answered with an error rather than ignored. It also carries `instance`, random for each start of the daemon, which tells the server whether sessions missing from the list were closed or lost (§7.3).
 - **Requests:**
   - `list`
   - `create {cmd?, cwd, env, cols, rows}`
@@ -335,7 +335,7 @@ When a snapshot is taken, the tracker appends the sequences that re-establish th
   - For alt-screen programs the log is mostly redraw traffic. Their history lives inside the program and on disk (`~/.claude/projects/…`, `~/.codex/sessions/…`).
 - **Exit.** When the child exits, the session stays visible with its final screen and exit status. Available actions:
   - **Restart:** same command, cwd and size.
-  - **Revive:** see §7.3.
+  - **Restore** after a daemon restart: see §7.3.
   - **Remove.**
 
 ## 6. Browser client
@@ -431,17 +431,29 @@ When a snapshot is taken, the tracker appends the sequences that re-establish th
 - **History viewer (later).** It renders log segments in a read-only terminal view, with search.
 - **Agent transcripts** are easier to read inside the agent: Ctrl+O in Claude Code's fullscreen mode, Ctrl+T in Codex.
 
-### 7.3 Revival after a daemon restart or reboot
+### 7.3 Restoring terminals after a daemon restart or reboot
 
-- **Persisted state.**
-  - The daemon persists each session record: command, cwd, environment overrides, size.
-  - It also saves the last snapshot, every 30 s and when the session exits.
-- **On start**, sessions whose processes are gone become `dead`. Their tile shows the last screen, read-only, with **Revive** and **Remove**.
-- **Revive** spawns a new PTY with the same size and cwd and runs the session's revive command. The server fills that command from hooks:
-  - **Default:** the original startup command.
-  - **Claude Code:** `SessionStart` provides `session_id`, which gives `claude --resume <id>`.
-  - **Codex:** `codex resume <id>` if its hook payload carries the id (to verify); otherwise `codex resume --last`.
-- **Revival is manual by default.** A later, opt-in setting could revive selected sessions automatically when the daemon starts, for things like dev servers and log tails.
+A reboot, or `spectraweaver down --all`, ends every terminal. What matters most to bring back is the coding agents' conversations, and those outlive the processes: Claude Code and Codex keep them on disk and resume them by id. The rest (tab, window, size, directory) is SpectraWeaver's own.
+
+- **Noting it while the terminal runs.** Every 15 s the server notes, per live terminal, in `meta.json` (written only when something changed):
+  - the directory: the agent's if one runs, else the shell's (`/proc/<pid>/cwd`, `lsof` on macOS);
+  - the size;
+  - the agent in the foreground (§8.2), the flags worth keeping (an allowlist per agent: `--dangerously-skip-permissions`, `--model`, Codex's `-c key=value`, …), and its conversation id.
+  A terminal whose program exited has nothing to restore and is noted as such.
+- **Finding the conversation id**, most reliable first:
+  1. From the agent: Claude Code lists each running session in `<config>/sessions/<pid>.json` (`sessionId`, `cwd`, `startedAt`; a file older than the process is ignored), and Codex keeps its rollout file `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl` open (the npm package runs the real binary as a child, so descendants are searched).
+  2. The id found earlier for the same agent process.
+  3. An id on the command line (`claude --resume ID`, `codex resume ID`).
+  4. The conversation file in the agent's directory written to most recently since the agent started, not taken by another terminal.
+  5. None: the restore command then resumes the directory's latest conversation (`claude --continue`, `codex resume --last`).
+
+  `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are read from the agent's environment (`/proc/<pid>/environ`), so a terminal with its own configuration directory works; the daemon passes `CLAUDE_CONFIG_DIR` through to sessions.
+- **Lost, not closed.** The daemon's hello carries a random `instance` per start. When the server connects to a daemon whose instance differs from the one it saw last, sessions missing from the list were lost: each with a note is kept in `meta.json`, marked lost. With the same daemon, a missing session was closed while the server was away, and is forgotten. A session closed from the browser is forgotten at once.
+- **Restoring.** "↻ Restore N" in the top bar lists the lost terminals, all ticked. Restoring creates a terminal with the noted size and directory (home if it is gone) and the resume command as its startup command, tagged `restore:<lost id>`; when the daemon announces it, the server gives it the lost terminal's tab, window, colour and banner, and forgets the lost one. A plain shell returns in its directory only.
+- **The agents' files are not interfaces.** Only their steadiest parts are used: a conversation's id from its file name, its directory from a `cwd` field near the start, and recency from the file's time. Titles (Claude Code's `aiTitle`, `customTitle`, `summary`, `lastPrompt`; Codex's last `user_message`) only label lists, and a list falls back to the directory when they are missing. The resume commands are the agents' documented ones. Codex's SQLite state databases are not used. If Claude Code's per-process file goes away, ids still come from the conversation files (step 4).
+- **Recent conversations.** The same dialog lists the conversations written to in the last two weeks that a person started (not `claude -p`, SDK runs, subagents or `codex exec`) and no terminal, live or lost, is on, newest first, to open in new terminals with flags pre-filled from those each agent last ran with. This also recovers terminals lost before their notes existed.
+- **Manual by default.** Restoring starts every agent at once; most of them may not be wanted any more. A later, opt-in setting could restore automatically when the daemon starts.
+- **Later:** the last screen of each lost terminal (the daemon would save snapshots), and starting `spectraweaver up` at boot (a systemd user service with linger, or a crontab `@reboot` line).
 
 ## 8. Agent awareness
 
@@ -474,7 +486,7 @@ All integrations are opt-in, installed with `spectraweaver hooks install <agent>
   | `Notification` with `permission_prompt` or `idle_prompt` | needs-input |
   | `Stop` | done |
   | `UserPromptSubmit` | subtitle |
-  | `SessionStart` | `session_id`, for revive |
+  | `SessionStart` | `session_id` (restoring finds it without hooks, §7.3) |
 
   Claude Code also supports `http` hooks with environment-variable interpolation in headers, but outside SpectraWeaver a command hook fails more quietly.
 - **Codex:**
@@ -492,18 +504,11 @@ All integrations are opt-in, installed with `spectraweaver hooks install <agent>
 - A count in the tab title, for example "(2) SpectraWeaver".
 - Optional desktop notifications and sound (these need a secure context).
 
-### 8.5 Stopping and resuming agents
+### 8.5 Updating agents
 
-Updating Claude Code or Codex means restarting every running copy, and Codex cannot be replaced while copies of it run. "Stop agents" makes every agent exit and remembers how to resume it; after the update, "Resume agents" starts each again in its terminal, on the same conversation.
+Updating Claude Code or Codex means restarting every running copy, and Codex cannot be replaced while copies of it run. The way is `spectraweaver down --all`, the update, `spectraweaver up`, then **↻ Restore** (§7.3), which resumes each agent on its conversation in its terminal's place.
 
-- **Finding agents.** The server reads the terminal's foreground process group (`tpgid` in `/proc/<shell>/stat` on Linux, `ps` elsewhere) and recognises `claude` and `codex` by their program, including npm installs run by node.
-- **Exiting.** Ctrl+C pressed twice, in up to three rounds, until the shell is back in the foreground. A first press may only interrupt a task or cancel a question, and Ctrl+C is safer than typing `/exit`, whose Enter could answer a permission question.
-- **Learning how to resume.** Both agents print it when they exit: Claude Code `Resume this session with:` and `claude --resume ID`, Codex `To continue this session, run:` and `codex resume ID`. The server reads the terminal's text (from a snapshot) before and after, and only a hint that is new counts: the screen may still show older ones, including the command that resumed this very session. An agent that exits without one (an unsaved session, say) is reported, not resumed.
-- **Keeping flags.** An allowlist per agent keeps flags such as `--dangerously-skip-permissions`, `--model` or Codex's `-c key=value`; everything else, including an initial prompt that would be sent again, is dropped.
-- **Resuming.** Ctrl+U, then the command, typed at the prompt; a terminal running something else is skipped and reported.
-- **State.** The resume command is stored with the session in `meta.json`, so it survives page reloads and server restarts, and a tile shows ⏸ while it waits.
-- **No daemon change.** Everything uses existing daemon operations (session list, input, snapshot), so restarting the server is enough to get the feature; running sessions are untouched.
-- **Agent-specific knowledge** lives in one table (`src/server/agents.ts`); a new agent is one more entry. Hooks (§8.3) would give session ids before an exit, which reviving after a reboot needs.
+An earlier version stopped the agents in place (Ctrl+C pressed twice) and parsed the resume command each prints on exit (`Resume this session with: claude --resume ID`). That depended on the agents' exit messages and on Ctrl+C reaching them at the right moment, and it did not help after a reboot; knowing each conversation id while the agent runs covers both.
 
 ## 9. Security
 

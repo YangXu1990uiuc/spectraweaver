@@ -23,6 +23,8 @@ const DROP_PREFIXES = [
   "WT_",
   "SPECTRAWEAVER_",
 ];
+// Configuration, not identity: where Claude Code keeps its settings and conversations.
+const KEEP = new Set(["CLAUDE_CONFIG_DIR"]);
 const DROP_EXACT = new Set([
   "STY",
   "WINDOW",
@@ -46,7 +48,7 @@ export function sessionEnv(
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined || DROP_EXACT.has(key)) continue;
-    if (DROP_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
+    if (!KEEP.has(key) && DROP_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
     env[key] = value;
   }
   env.TERM = "xterm-256color";

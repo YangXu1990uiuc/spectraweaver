@@ -79,6 +79,11 @@ export interface HelloResult {
   pid: number;
   /** Requests added since protocol 1's first set that this daemon answers ("resize"); older daemons send none. */
   features?: string[];
+  /**
+   * Different for every start of a daemon. A session missing from a new daemon's list was lost
+   * (the daemon or the machine restarted), not closed. Older daemons send none.
+   */
+  instance?: string;
 }
 
 // ---- browser <-> server ----------------------------------------------------------------
@@ -89,8 +94,6 @@ export interface SessionView extends SessionInfo {
   tab: string;
   /** Tints the tile's header and outline; one of TILE_COLORS. */
   color: string;
-  /** A coding agent stopped by "Stop agents", waiting for "Resume agents". */
-  stopped?: StoppedAgent;
   /** Where its window sits while its tab lays terminals out as windows; absent until the user places it. */
   frame?: Frame;
 }
@@ -134,11 +137,34 @@ export function normalizeFrame(input: unknown): Frame | null {
   };
 }
 
-export interface StoppedAgent {
+/**
+ * A terminal that was lost when its daemon stopped (a reboot, or `spectraweaver down --all`),
+ * kept so it can be restored: a new terminal in the same tab, place, size and directory, running
+ * the agent it had again on the same conversation.
+ */
+export interface LostSession {
+  id: string;
+  tab: string;
+  color: string;
+  banner: string;
+  frame?: Frame;
+  cwd: string;
+  cols: number;
+  rows: number;
+  /** The coding agent that ran in it, the command that resumes it, and what the conversation is about. */
+  agent?: { name: string; command: string; conversation?: string };
+}
+
+/** A Claude Code or Codex conversation found in the agent's own transcript files. */
+export interface Conversation {
   agent: string;
-  /** Typed at the terminal's prompt to resume it. */
+  id: string;
+  cwd: string;
+  /** The agent's title for it, or its last prompt. */
+  label: string;
+  updatedAt: number;
+  /** The command that resumes it, without flags. */
   command: string;
-  at: number;
 }
 
 export interface TabView {
@@ -186,8 +212,11 @@ export type ClientMessage =
   | { t: "tab-update"; id: string; name?: string; color?: string; grid?: string }
   | { t: "tab-delete"; id: string }
   | { t: "tab-move"; id: string; index: number }
-  | { t: "agents-stop" }
-  | { t: "agents-resume" };
+  /** Restores lost terminals; `forget` drops them instead. */
+  | { t: "restore"; ids: string[] }
+  | { t: "forget"; ids: string[] }
+  /** Asks for the agents' recent conversations. */
+  | { t: "conversations" };
 
 export type ServerMessage =
   | { t: "hello"; version: string }
@@ -198,12 +227,12 @@ export type ServerMessage =
   | { t: "removed"; session: string }
   | { t: "snapshot"; snapshot: Snapshot }
   | { t: "bell"; session: string }
-  | {
-      t: "agents-done";
-      action: "stop" | "resume";
-      done: number;
-      failed: { session: string; agent: string; reason: string }[];
-    }
+  | { t: "lost"; sessions: LostSession[] }
+  /**
+   * Recent conversations not open in any terminal, newest first, and the flags each agent was
+   * last seen running with (to resume them the same way).
+   */
+  | { t: "conversations"; conversations: Conversation[]; flags: Record<string, string> }
   | { t: "error"; message: string };
 
 // ---- terminal theme --------------------------------------------------------------------

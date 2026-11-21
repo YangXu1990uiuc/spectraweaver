@@ -74,6 +74,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
 
   const context: DaemonContext = {
     log,
+    instance: randomBytes(8).toString("hex"),
     sessions,
     create(request) {
       const cols = clampInt(request.cols, SIZE_LIMITS.minCols, SIZE_LIMITS.maxCols);
@@ -144,6 +145,8 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
 
 interface DaemonContext {
   log: (message: string) => void;
+  /** Tells this run of the daemon from the next (HelloResult.instance). */
+  instance: string;
   sessions: Map<string, Session>;
   create(request: { cols: number; rows: number; cwd?: string; cmd?: string; tag?: string }): Session;
   close(id: string): void;
@@ -227,6 +230,7 @@ class Connection implements Subscriber {
           version: VERSION,
           pid: process.pid,
           features: [...DAEMON_FEATURES],
+          instance: this.context.instance,
         };
         this.respond(request.id, hello);
         return;

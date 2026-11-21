@@ -4,12 +4,14 @@
 
 import type { ServerWebSocket } from "bun";
 import { randomBytes } from "node:crypto";
+import { statSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { loadInstance } from "../common/config.ts";
 import { ensurePrivateDir, type Paths } from "../common/paths.ts";
 import type {
   ClientMessage,
   DaemonEvent,
+  LostSession,
   ServerMessage,
   SessionInfo,
   SessionView,
@@ -28,11 +30,12 @@ import {
   setPassword,
   validatePassword,
 } from "./auth.ts";
-import { type AgentControlDeps, resumeAgent, stopAgent } from "./agent-control.ts";
-import { terminalText } from "./agents.ts";
+import { agentNamed, resumeCommand, shellQuote } from "./agents.ts";
+import { type AgentDirs, agentDirs, Conversations } from "./conversations.ts";
 import { DaemonClient } from "./daemon-client.ts";
 import { foregroundProcess, processCwd } from "./foreground.ts";
 import { MetaStore } from "./meta.ts";
+import { observe, type RevivalDeps } from "./revival.ts";
 
 export interface ServerOptions {
   paths: Paths;
@@ -42,6 +45,10 @@ export interface ServerOptions {
   allowHosts?: string[];
   development?: boolean;
   log?: (message: string) => void;
+  /** How often to note what would bring each terminal back after a restart. */
+  revivalEveryMs?: number;
+  /** Where Claude Code and Codex keep their conversations; from the environment by default. */
+  agentDirs?: AgentDirs;
 }
 
 export interface ServerHandle {
@@ -67,6 +74,20 @@ interface Fan {
 
 // A browser that cannot keep up is disconnected; it reconnects and gets fresh snapshots.
 const MAX_CLIENT_BACKLOG = 32 * 1024 * 1024;
+const REVIVAL_EVERY_MS = 15_000;
+/** How far back "Resume a recent conversation" looks, and how many it lists. */
+const RECENT_CONVERSATIONS_MS = 14 * 24 * 3600_000;
+const RECENT_CONVERSATIONS_MAX = 60;
+// A tag the server gives a terminal it creates to restore a lost one; the daemon echoes it.
+const RESTORE_TAG = "restore:";
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 function ownerName(): string {
   try {
@@ -98,9 +119,11 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     banner: meta.banner(session.id),
     tab: meta.tabOf(session.id),
     color: meta.colorOf(session.id, sessions.keys()),
-    stopped: meta.stopped(session.id),
     frame: meta.frameOf(session.id),
   });
+  const dirs = options.agentDirs ?? agentDirs();
+  const conversations = new Conversations(dirs);
+  const revivalDeps: RevivalDeps = { foreground: foregroundProcess, processCwd, conversations, dirs };
 
   const send = (client: Client, data: string | Uint8Array) => {
     client.send(data);
@@ -116,6 +139,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     if (session) broadcast({ t: "session", session: view(session) });
   };
   const broadcastTabs = () => broadcast({ t: "tabs", tabs: meta.tabs() });
+  const broadcastLost = () => broadcast({ t: "lost", sessions: lostViews() });
 
   const daemon = new DaemonClient(
     options.paths.daemonSocket,
@@ -128,16 +152,25 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
           .then((list) => {
             sessions.clear();
             for (const session of list) sessions.set(session.id, session);
-            meta.prune(new Set(sessions.keys()));
+            // Daemons older than the instance id are told apart by pid.
+            meta.reconcile(new Set(sessions.keys()), hello.instance ?? `pid ${hello.pid}`);
             // Sessions without a colour get one in creation order, so the result is stable.
             for (const session of [...list].sort((a, b) => a.createdAt - b.createdAt)) {
               meta.colorOf(session.id, sessions.keys());
             }
             broadcast({ t: "daemon", up: true, features: [...daemonFeatures] });
             broadcast({ t: "sessions", sessions: list.map(view) });
+            broadcastLost();
+            noteRevivals();
             // Browsers keep their subscriptions across a daemon reconnect; each gets a fresh snapshot.
+            // A new daemon has none of the old sessions; those subscriptions just end.
             fans.clear();
-            for (const client of clients) for (const id of client.data.subs) subscribe(client, id);
+            for (const client of clients) {
+              for (const id of [...client.data.subs]) {
+                if (sessions.has(id)) subscribe(client, id);
+                else client.data.subs.delete(id);
+              }
+            }
           })
           .catch((error: Error) => log(`listing sessions failed: ${error.message}`));
       },
@@ -160,13 +193,17 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     switch (event.type) {
       case "created":
         sessions.set(event.session.id, event.session);
-        // Sessions created from a browser carry the tab they were created in.
-        if (event.tag) meta.setSessionTab(event.session.id, event.tag, sessions.keys());
+        // Sessions created from a browser carry the tab they were created in; restored ones, the
+        // lost terminal they replace.
+        if (event.tag?.startsWith(RESTORE_TAG)) adoptLost(event.session.id, event.tag.slice(RESTORE_TAG.length));
+        else if (event.tag) meta.setSessionTab(event.session.id, event.tag, sessions.keys());
         broadcast({ t: "session", session: view(event.session) });
         return;
       case "exited": {
         const session = sessions.get(event.session);
         if (session) session.exited = { code: event.code, signal: event.signal, at: Date.now() };
+        // Its program ended: there is nothing left to restore.
+        meta.setRevival(event.session, undefined);
         broadcastSession(event.session);
         return;
       }
@@ -378,67 +415,146 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       case "tab-move":
         if (meta.moveTab(String(message.id), Number(message.index))) broadcastTabs();
         return;
-      case "agents-stop":
-        void runAgents(client, "stop");
+      case "restore":
+        if (Array.isArray(message.ids)) for (const id of message.ids) restore(client, String(id));
         return;
-      case "agents-resume":
-        void runAgents(client, "resume");
+      case "forget":
+        if (!Array.isArray(message.ids)) return;
+        for (const id of message.ids) if (meta.isLost(String(id)) && !restoring.has(String(id))) meta.forget(String(id));
+        broadcastLost();
+        return;
+      case "conversations":
+        sendJson(client, { t: "conversations", conversations: recentConversations(), flags: meta.agentFlags() });
         return;
     }
   }
 
-  const agentDeps: AgentControlDeps = {
-    input: (session, data) => daemon.request({ op: "input", session, data }),
-    screenText: async (session) => terminalText((await daemon.call<Snapshot>({ op: "snapshot", session })).data),
-    foreground: foregroundProcess,
-  };
-  let agentsBusy = false;
+  // ---- terminals lost when their daemon stopped -------------------------------------------
+
+  /** Lost terminals being restored, so a second click does not restore them twice. */
+  const restoring = new Set<string>();
+
+  function lostViews(): LostSession[] {
+    return meta.lostIds().flatMap((id) => {
+      const revival = meta.revival(id);
+      if (!revival || restoring.has(id)) return [];
+      const lost: LostSession = {
+        id,
+        tab: meta.tabOf(id),
+        color: meta.colorOf(id, []),
+        banner: meta.banner(id),
+        frame: meta.frameOf(id),
+        cwd: revival.cwd,
+        cols: revival.cols,
+        rows: revival.rows,
+      };
+      const agent = revival.agent && agentNamed(revival.agent.name);
+      if (revival.agent && agent) {
+        const id = revival.agent.conversation ?? null;
+        const file = id ? conversations.find(agent.name, id) : undefined;
+        lost.agent = {
+          name: agent.name,
+          command: resumeCommand(agent, id, revival.agent.flags),
+          conversation: file ? conversations.label(file) : undefined,
+        };
+      }
+      return [lost];
+    });
+  }
 
   /**
-   * Stops every coding agent (to update them), remembering how to resume each, or resumes
-   * the stopped ones. Terminals are handled in parallel; a stop takes a few seconds.
+   * A new terminal for a lost one: same tab, window, size and directory (home if it is gone),
+   * resuming the agent that ran in it on the same conversation.
    */
-  async function runAgents(client: Client, action: "stop" | "resume"): Promise<void> {
-    if (agentsBusy) {
-      sendJson(client, { t: "error", message: "Agents are already being stopped or resumed." });
+  function restore(client: Client, lostId: string): void {
+    const revival = meta.revival(lostId);
+    if (!meta.isLost(lostId) || !revival || restoring.has(lostId)) return;
+    if (!daemon.connected) {
+      sendJson(client, { t: "error", message: "The daemon is not running. Start it with `spectraweaver up`." });
       return;
     }
-    agentsBusy = true;
-    let done = 0;
-    const failed: { session: string; agent: string; reason: string }[] = [];
-    const live = [...sessions.values()].filter((session) => !session.exited);
-    await Promise.all(
-      live.map(async ({ id, pid }) => {
-        const stopped = meta.stopped(id);
-        try {
-          if (action === "stop" && !stopped) {
-            const result = await stopAgent(agentDeps, id, pid);
-            if (result.kind === "stopped") {
-              meta.setStopped(id, { agent: result.agent, command: result.command, at: Date.now() });
-              done++;
-              broadcastSession(id);
-            } else if (result.kind === "failed") {
-              failed.push({ session: id, agent: result.agent, reason: result.reason });
-            }
-          } else if (action === "resume" && stopped) {
-            const outcome = resumeAgent(agentDeps, id, pid, stopped);
-            if (outcome === "busy") {
-              failed.push({ session: id, agent: stopped.agent, reason: "something else runs in its terminal" });
-              return;
-            }
-            if (outcome === "resumed") done++;
-            meta.setStopped(id, undefined);
-            broadcastSession(id);
-          }
-        } catch (error) {
-          failed.push({ session: id, agent: stopped?.agent ?? "agent", reason: (error as Error).message });
+    const agent = revival.agent && agentNamed(revival.agent.name);
+    const cmd = revival.agent && agent ? resumeCommand(agent, revival.agent.conversation ?? null, revival.agent.flags) : undefined;
+    restoring.add(lostId);
+    broadcastLost();
+    daemon.request(
+      {
+        op: "create",
+        cols: revival.cols,
+        rows: revival.rows,
+        cwd: isDirectory(revival.cwd) ? revival.cwd : undefined,
+        cmd,
+        tag: `${RESTORE_TAG}${lostId}`,
+      },
+      (response) => {
+        restoring.delete(lostId);
+        if (!response.ok) {
+          sendJson(client, { t: "error", message: `Restoring a terminal failed: ${response.error}` });
+        } else if (meta.isLost(lostId)) {
+          // Daemons older than the tag don't echo it.
+          adoptLost((response.result as SessionInfo).id, lostId);
         }
-      }),
+        broadcastLost();
+      },
     );
-    agentsBusy = false;
-    log(`agents ${action}: ${done} done, ${failed.length} failed`);
-    if (clients.has(client)) sendJson(client, { t: "agents-done", action, done, failed });
   }
+
+  function adoptLost(sessionId: string, lostId: string): void {
+    if (!meta.isLost(lostId)) return;
+    meta.adopt(sessionId, lostId);
+    broadcastSession(sessionId);
+  }
+
+  /** Conversations from the last two weeks that no terminal, live or lost, is on. */
+  function recentConversations() {
+    conversations.refresh();
+    const taken = new Set<string>();
+    for (const id of [...sessions.keys(), ...meta.lostIds()]) {
+      const conversation = meta.revival(id)?.agent?.conversation;
+      if (conversation) taken.add(conversation);
+    }
+    return conversations
+      .recent(Date.now() - RECENT_CONVERSATIONS_MS, RECENT_CONVERSATIONS_MAX + taken.size)
+      .filter((found) => !taken.has(found.id))
+      .slice(0, RECENT_CONVERSATIONS_MAX)
+      .map((found) => ({
+        agent: found.agent,
+        id: found.id,
+        cwd: found.cwd,
+        label: found.label,
+        updatedAt: Math.round(found.mtimeMs),
+        command: agentNamed(found.agent)!.resume(found.id),
+      }));
+  }
+
+  /** Notes, for every running terminal, what would bring it back after a restart. */
+  function noteRevivals(): void {
+    if (!daemon.connected) return;
+    const claimed = new Set<string>();
+    const live = [...sessions.values()].filter((session) => !session.exited);
+    // Conversations already found are kept first, so a guess for another terminal cannot take them.
+    for (const session of live) {
+      const conversation = meta.revival(session.id)?.agent?.conversation;
+      if (conversation) claimed.add(conversation);
+    }
+    for (const session of live) {
+      const previous = meta.revival(session.id);
+      const own = previous?.agent?.conversation;
+      if (own) claimed.delete(own);
+      try {
+        const revival = observe(session, previous, claimed, revivalDeps);
+        meta.setRevival(session.id, revival);
+        if (revival.agent) {
+          if (revival.agent.conversation) claimed.add(revival.agent.conversation);
+          meta.setAgentFlags(revival.agent.name, revival.agent.flags.map(shellQuote).join(" "));
+        }
+      } catch (error) {
+        log(`noting how to restore ${session.id} failed: ${(error as Error).message}`);
+        if (own) claimed.add(own);
+      }
+    }
+  }
+  const revivalTimer = setInterval(noteRevivals, options.revivalEveryMs ?? REVIVAL_EVERY_MS);
 
   const isAuthed = (request: Request) => {
     const value = readCookie(request, cookie);
@@ -539,6 +655,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         sendJson(client, { t: "daemon", up: daemon.connected, features: [...daemonFeatures] });
         sendJson(client, { t: "tabs", tabs: meta.tabs() });
         sendJson(client, { t: "sessions", sessions: [...sessions.values()].map(view) });
+        sendJson(client, { t: "lost", sessions: lostViews() });
       },
       message(client, raw) {
         if (typeof raw !== "string") return;
@@ -567,6 +684,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       return credentials.token();
     },
     async stop() {
+      clearInterval(revivalTimer);
       daemon.stop();
       await server.stop(true);
       meta.flush();

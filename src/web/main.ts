@@ -7,6 +7,7 @@ import {
   type ClientMessage,
   decodeOutputPayload,
   type Frame,
+  type LostSession,
   type ServerMessage,
   type SessionView,
   TAB_COLORS,
@@ -17,6 +18,7 @@ import { detectPlatform } from "./keymap.ts";
 import { createSettingsDialog, ensureLogin } from "./login.ts";
 import { createNewTerminalDialog, recommendedSize } from "./new-dialog.ts";
 import { createResizeDialog } from "./resize-dialog.ts";
+import { createRestoreDialog } from "./restore-dialog.ts";
 import { measureFont } from "./sizing.ts";
 import { SESSION_DRAG_TYPE, TabStrip } from "./tabs.ts";
 import { FONT_FAMILY, TermView } from "./term-view.ts";
@@ -40,6 +42,8 @@ const GRID_GAP = 4;
 const TILE_BORDER = 1;
 
 const sessions = new Map<string, SessionView>();
+/** Terminals lost when the daemon stopped, waiting to be restored. */
+let lost: LostSession[] = [];
 let tabs: TabView[] = [];
 const tiles = new Map<string, Tile>();
 /** Sessions that rang the bell since this browser last looked at them. */
@@ -106,12 +110,7 @@ const snapToggle = el(
   },
   [snapBox, "Snap to grid"],
 );
-const stopAgentsButton = el(
-  "button",
-  { title: "Stop every Claude Code and Codex session, for example to update them; Resume starts each again" },
-  ["⏸ Stop agents"],
-);
-const resumeAgentsButton = el("button", { class: "primary", hidden: "" });
+const restoreButton = el("button", {}, ["↻ Restore"]);
 const settingsButton = el("button", { class: "icon-btn settings-btn", title: "Settings" }, ["⚙"]);
 const notice = el("div", { class: "notice", hidden: "" });
 const grid = el("main", { class: "grid" });
@@ -167,28 +166,16 @@ if (!window.isSecureContext) {
     ),
   );
 }
-topbar.append(stopAgentsButton, resumeAgentsButton, snapToggle, newButtons, settingsButton);
+topbar.append(restoreButton, snapToggle, newButtons, settingsButton);
 
-stopAgentsButton.addEventListener("click", () => {
-  const question =
-    "Stop every Claude Code and Codex session, in all tabs?\n\n" +
-    "Each exits as with Ctrl+C pressed twice, which interrupts a task in progress. " +
-    "Update them, then press Resume to start each again in its terminal, where it left off.";
-  if (!confirm(question)) return;
-  stopAgentsButton.disabled = true;
-  toast("Stopping agents…");
-  send({ t: "agents-stop" });
-});
-resumeAgentsButton.addEventListener("click", () => {
-  resumeAgentsButton.disabled = true;
-  send({ t: "agents-resume" });
-});
-
-function updateAgentButtons(): void {
-  const stopped = [...sessions.values()].filter((session) => session.stopped).length;
-  resumeAgentsButton.hidden = stopped === 0;
-  resumeAgentsButton.textContent = `▶ Resume ${stopped} agent${stopped === 1 ? "" : "s"}`;
-  resumeAgentsButton.title = "Run each stopped agent's resume command in its terminal";
+function updateRestoreButton(): void {
+  restoreButton.textContent = lost.length > 0 ? `↻ Restore ${lost.length}` : "↻ Restore";
+  restoreButton.classList.toggle("primary", lost.length > 0);
+  restoreButton.title =
+    lost.length > 0
+      ? `${lost.length} terminal${lost.length === 1 ? " was" : "s were"} lost when the daemon stopped. ` +
+        "Restore opens them again where they were, resuming their agents' conversations."
+      : "Resume a recent Claude Code or Codex conversation in a new terminal";
 }
 
 function nameOf(sessionId: string): string {
@@ -308,6 +295,16 @@ function createTerminal(): void {
   send({ t: "create", cols, rows, tab, cwdOf: from });
 }
 const resizeDialog = createResizeDialog();
+const restoreDialog = createRestoreDialog({
+  send,
+  tabName: (id) => tabs.find((tab) => tab.id === id)?.name ?? "",
+  open: (cwd, cmd) => {
+    const { cols, rows } = recommendedSize(tileArea().area, measureFont(FONT_FAMILY));
+    createdHereAt = Date.now();
+    send({ t: "create", cols, rows, tab: currentView().tab?.id, cwd, cmd });
+  },
+});
+restoreButton.addEventListener("click", () => restoreDialog.open());
 
 function setStatus(): void {
   statusDot.className = `status ${connected ? (daemonUp ? "ok" : "warn") : "down"}`;
@@ -341,7 +338,6 @@ class Tile {
   private readonly subtitle: HTMLSpanElement;
   private readonly size: HTMLButtonElement;
   private readonly exitBadge: HTMLSpanElement;
-  private readonly stoppedBadge: HTMLSpanElement;
   private readonly focusButton: HTMLButtonElement;
 
   constructor(session: SessionView) {
@@ -351,7 +347,6 @@ class Tile {
     this.subtitle = el("span", { class: "subtitle" });
     this.size = el("button", { class: "meta size-btn", type: "button" });
     this.exitBadge = el("span", { class: "badge exited", hidden: "" });
-    this.stoppedBadge = el("span", { class: "badge stopped", hidden: "" });
     this.focusButton = el("button", { class: "icon-btn", title: "Focus this terminal" }, ["⤢"]);
     const windowButton = el("button", { class: "icon-btn", title: "Open in a new window" }, ["↗"]);
     const closeButton = el("button", { class: "icon-btn", title: "Close terminal" }, ["✕"]);
@@ -362,7 +357,6 @@ class Tile {
       this.banner,
       this.subtitle,
       this.exitBadge,
-      this.stoppedBadge,
       this.size,
       this.focusButton,
       windowButton,
@@ -496,11 +490,6 @@ class Tile {
     const exited = session.exited;
     this.exitBadge.hidden = !exited;
     if (exited) this.exitBadge.textContent = exited.signal ? `exited (${exited.signal})` : `exited ${exited.code ?? ""}`;
-    this.stoppedBadge.hidden = !session.stopped;
-    if (session.stopped) {
-      this.stoppedBadge.textContent = `⏸ ${session.stopped.agent}`;
-      this.stoppedBadge.title = `Stopped. Resume runs: ${session.stopped.command}`;
-    }
     this.focusButton.textContent = currentView().focus === session.id ? "⤡" : "⤢";
     this.root.classList.toggle("bell", belled.has(session.id));
   }
@@ -588,10 +577,12 @@ function render(): void {
   empty.hidden = visible.length > 0;
   empty.textContent = view.focus
     ? "This terminal no longer exists."
-    : "No terminals in this tab yet. Create one with “+ New terminal”, or drag one here onto the tab.";
+    : lost.length > 0
+      ? `${lost.length} terminal${lost.length === 1 ? " was" : "s were"} lost when the daemon stopped. Open them again with “↻ Restore”.`
+      : "No terminals in this tab yet. Create one with “+ New terminal”, or drag one here onto the tab.";
   layoutGrid();
   updateWindowIdentity(view.tab);
-  updateAgentButtons();
+  updateRestoreButton();
 }
 
 // ---- connection ------------------------------------------------------------------------
@@ -623,7 +614,6 @@ function onServerMessage(message: ServerMessage): void {
       // or its window moved (which can move the unplaced windows too), only its own tile needs updating.
       if (previous?.tab === message.session.tab && sameFrame(previous.frame, message.session.frame)) {
         tiles.get(message.session.id)?.update(message.session);
-        updateAgentButtons();
       } else {
         render();
       }
@@ -642,26 +632,15 @@ function onServerMessage(message: ServerMessage): void {
       belled.add(message.session);
       render();
       return;
-    case "agents-done": {
-      stopAgentsButton.disabled = false;
-      resumeAgentsButton.disabled = false;
-      const stop = message.action === "stop";
-      const count = `${message.done} agent${message.done === 1 ? "" : "s"}`;
-      let text =
-        message.done === 0 && message.failed.length === 0
-          ? stop
-            ? "No Claude Code or Codex session is running."
-            : "Nothing to resume."
-          : `${stop ? "Stopped" : "Resumed"} ${count}.`;
-      for (const failure of message.failed) {
-        text += ` Not ${stop ? "stopped" : "resumed"}: ${nameOf(failure.session)} (${failure.agent}), ${failure.reason}.`;
-      }
-      toast(text);
+    case "lost":
+      lost = message.sessions;
+      restoreDialog.setLost(lost);
+      render();
       return;
-    }
+    case "conversations":
+      restoreDialog.setConversations(message.conversations, message.flags);
+      return;
     case "error":
-      stopAgentsButton.disabled = false;
-      resumeAgentsButton.disabled = false;
       toast(message.message);
       return;
   }
@@ -682,9 +661,6 @@ function connect(): void {
   ws.addEventListener("open", () => {
     if (ws !== current) return ws.close();
     socket = ws;
-    // A stop or resume that was under way when the connection dropped will not report back.
-    stopAgentsButton.disabled = false;
-    resumeAgentsButton.disabled = false;
     connected = true;
     reconnectDelay = 250;
     setStatus();
@@ -736,7 +712,16 @@ async function reconnect(): Promise<void> {
 
 function showApp(): void {
   const main = el("div", { class: "main" }, [grid, empty]);
-  app.replaceChildren(topbar, notice, main, newDialog.element, resizeDialog.element, settings.element, toastBox);
+  app.replaceChildren(
+    topbar,
+    notice,
+    main,
+    newDialog.element,
+    resizeDialog.element,
+    restoreDialog.element,
+    settings.element,
+    toastBox,
+  );
   setStatus();
   render();
 }

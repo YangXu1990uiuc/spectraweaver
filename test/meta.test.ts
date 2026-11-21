@@ -3,7 +3,7 @@
 // Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 import { afterEach, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type TabView, TILE_COLORS } from "../src/common/protocol.ts";
 import { MetaStore } from "../src/server/meta.ts";
@@ -121,4 +121,48 @@ test("a window frame is stored checked, survives a restart, and goes when the te
   meta.setSessionFrame("s1", { x: 0, y: 0, w: 0.5, h: 0.5, z: 1 });
   meta.deleteTab("cccccccc", ["s1"]); // moved to the neighbour: likewise
   expect(meta.frameOf("s1")).toBeUndefined();
+});
+
+test("a session missing from the same daemon was closed; from a new daemon, it was lost", () => {
+  const { meta, file } = store();
+  const revival = { cwd: "/work", cols: 80, rows: 24 };
+  meta.reconcile(new Set(["a", "b", "c"]), "daemon-1");
+  for (const id of ["a", "b"]) meta.setRevival(id, revival);
+  meta.setBanner("a", "auth refactor");
+  meta.setBanner("c", "no revival noted");
+
+  // The same daemon: "b" was closed while the server was away.
+  meta.reconcile(new Set(["a", "c"]), "daemon-1");
+  expect(meta.revival("b")).toBeUndefined();
+  expect(meta.lostIds()).toEqual([]);
+
+  // A new daemon: "a" is lost and kept; "c" had nothing to restore it from.
+  meta.reconcile(new Set(), "daemon-2");
+  expect(meta.lostIds()).toEqual(["a"]);
+  expect(meta.banner("c")).toBe("");
+  // Lost terminals stay through later reconnects, and across server restarts.
+  meta.reconcile(new Set(["d"]), "daemon-2");
+  meta.flush();
+  const reread = new MetaStore(file);
+  expect(reread.lostIds()).toEqual(["a"]);
+
+  // Restoring hands the lost terminal's banner, colour and window to the new one.
+  const color = meta.colorOf("a", []);
+  meta.adopt("d", "a");
+  expect(meta.lostIds()).toEqual([]);
+  expect(meta.banner("d")).toBe("auth refactor");
+  expect(meta.colorOf("d", ["d"])).toBe(color);
+});
+
+test("revival notes are written only when they change", async () => {
+  const { meta, file } = store();
+  const revival = { cwd: "/work", cols: 80, rows: 24, agent: { name: "claude", flags: [], pid: 7 } };
+  meta.setRevival("a", revival);
+  meta.flush();
+  writeFileSync(file, "untouched");
+  meta.setRevival("a", { ...revival, agent: { ...revival.agent } }); // noted again every few seconds
+  await Bun.sleep(250);
+  expect(readFileSync(file, "utf8")).toBe("untouched");
+  meta.setRevival("a", undefined); // its program exited
+  expect(meta.revival("a")).toBeUndefined();
 });

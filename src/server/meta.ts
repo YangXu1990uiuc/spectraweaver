@@ -4,11 +4,11 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { writeFileAtomic } from "../common/files.ts";
+import type { Revival } from "./revival.ts";
 import {
   type Frame,
   GRID_PATTERN,
   normalizeFrame,
-  type StoppedAgent,
   TAB_COLORS,
   type TabView,
   TILE_COLORS,
@@ -18,15 +18,22 @@ interface SessionMeta {
   banner?: string;
   tab?: string;
   color?: string;
-  stopped?: StoppedAgent;
   /** The session's window in its tab; absent until the user places it. */
   frame?: Frame;
+  /** What would bring the terminal back, noted while it runs. */
+  revival?: Revival;
+  /** The terminal was lost when its daemon stopped, and waits to be restored or forgotten. */
+  lost?: true;
 }
 
 interface MetaFile {
   version: 2;
   tabs: TabView[];
   sessions: Record<string, SessionMeta>;
+  /** The daemon run the sessions belong to (HelloResult.instance). */
+  daemon?: string;
+  /** The flags each agent was last seen running with, shell-quoted. */
+  agentFlags?: Record<string, string>;
 }
 
 const TAB_ID = /^[0-9a-f]{8}$/;
@@ -45,16 +52,14 @@ export class MetaStore {
   constructor(private readonly file: string) {
     if (!existsSync(file)) return;
     try {
-      const parsed = JSON.parse(readFileSync(file, "utf8")) as {
-        version?: number;
-        tabs?: TabView[];
-        sessions?: Record<string, SessionMeta>;
-      };
+      const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<MetaFile>;
       const tabs = (parsed.tabs ?? []).filter((tab) => TAB_ID.test(tab.id));
       this.data = {
         version: 2,
         tabs: tabs.length > 0 ? tabs : [{ ...DEFAULT_TAB }],
         sessions: parsed.sessions ?? {}, // version 1 files carry banners only
+        daemon: typeof parsed.daemon === "string" ? parsed.daemon : undefined,
+        agentFlags: parsed.agentFlags ?? {},
       };
     } catch {
       // A corrupt file only loses banners and tabs; start fresh.
@@ -94,13 +99,61 @@ export class MetaStore {
     return color;
   }
 
-  stopped(sessionId: string): StoppedAgent | undefined {
-    const stopped = this.data.sessions[sessionId]?.stopped;
-    return typeof stopped?.command === "string" && typeof stopped.agent === "string" ? stopped : undefined;
+  revival(sessionId: string): Revival | undefined {
+    const revival = this.data.sessions[sessionId]?.revival;
+    return typeof revival?.cwd === "string" ? revival : undefined;
   }
 
-  setStopped(sessionId: string, stopped: StoppedAgent | undefined): void {
-    this.patchSession(sessionId, { stopped });
+  /** Notes what would bring a live terminal back; written only when it changed. */
+  setRevival(sessionId: string, revival: Revival | undefined): void {
+    if (JSON.stringify(this.data.sessions[sessionId]?.revival) === JSON.stringify(revival)) return;
+    if (revival || this.data.sessions[sessionId]) this.patchSession(sessionId, { revival });
+  }
+
+  /** Lost terminals, in the order they were created. */
+  lostIds(): string[] {
+    return Object.keys(this.data.sessions).filter((id) => this.isLost(id));
+  }
+
+  isLost(sessionId: string): boolean {
+    return this.data.sessions[sessionId]?.lost === true && this.revival(sessionId) !== undefined;
+  }
+
+  /**
+   * Brings the stored sessions in line with the daemon's. A session the daemon does not have
+   * was closed while the server was away, unless the daemon is a new one: then it was lost, and
+   * is kept to be restored if there is anything to restore it from.
+   */
+  reconcile(liveIds: Set<string>, daemon: string): void {
+    const restarted = this.data.daemon !== undefined && this.data.daemon !== daemon;
+    for (const id of Object.keys(this.data.sessions)) {
+      if (liveIds.has(id) || this.data.sessions[id]!.lost) continue;
+      if (restarted && this.revival(id)) this.patchSession(id, { lost: true });
+      else this.forget(id);
+    }
+    if (this.data.daemon !== daemon) {
+      this.data.daemon = daemon;
+      this.scheduleSave();
+    }
+  }
+
+  /** Gives a restored terminal the tab, colour, banner and window of the lost one, which goes. */
+  adopt(sessionId: string, lostId: string): void {
+    const lost = this.data.sessions[lostId];
+    if (!lost) return;
+    this.patchSession(sessionId, { tab: lost.tab, color: lost.color, banner: lost.banner, frame: lost.frame });
+    this.forget(lostId);
+  }
+
+  agentFlags(): Record<string, string> {
+    return { ...this.data.agentFlags };
+  }
+
+  setAgentFlags(agent: string, flags: string): void {
+    this.data.agentFlags ??= {};
+    if (this.data.agentFlags[agent] === flags) return;
+    this.data.agentFlags[agent] = flags;
+    this.scheduleSave();
   }
 
   frameOf(sessionId: string): Frame | undefined {
@@ -183,11 +236,6 @@ export class MetaStore {
     if (!(sessionId in this.data.sessions)) return;
     delete this.data.sessions[sessionId];
     this.scheduleSave();
-  }
-
-  /** Drops metadata of sessions the daemon no longer has. */
-  prune(liveIds: Set<string>): void {
-    for (const id of Object.keys(this.data.sessions)) if (!liveIds.has(id)) this.forget(id);
   }
 
   flush(): void {

@@ -3,19 +3,26 @@
 // Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
 // What SpectraWeaver knows about each coding agent CLI, kept in one place: how to recognise
-// it, how its exit message says to resume, and which of its flags to keep when resuming.
+// it, how to resume one of its conversations, and which of its flags to keep when resuming.
 
 import { basename } from "node:path";
 
 /** How many values a flag takes: none, one, or all that follow until the next flag. */
 type Arity = 0 | 1 | "many";
 
+export type AgentName = "claude" | "codex";
+
 export interface Agent {
-  name: "claude" | "codex";
+  name: AgentName;
   /** Whether this is the agent's program (argv[0], or the script a runtime runs). */
   matches(program: string): boolean;
-  /** The resume command the agent prints when it exits, one per line. */
-  hint: RegExp;
+  /**
+   * The documented command that resumes a conversation, or the most recent one in the current
+   * directory when the id is unknown. Flags go last.
+   */
+  resume(conversation: string | null): string;
+  /** A conversation id given on the agent's command line, as in `claude --resume ID`. */
+  conversationInArgs(args: string[]): string | null;
   /**
    * Flags carried over to the resumed session. Anything else is dropped: resume options,
    * an initial prompt (which would be sent again), and flags whose values we can't parse.
@@ -23,12 +30,22 @@ export interface Agent {
   carry: Record<string, Arity>;
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export const AGENTS: Agent[] = [
   {
     name: "claude",
     matches: (program) => basename(program) === "claude" || program.includes("@anthropic-ai/claude-code/"),
-    // "Resume this session with:\nclaude [--worktree NAME ]--resume ID", or a quoted session name.
-    hint: /^claude (?:--worktree \S+ )?--resume \S.*$/gm,
+    resume: (conversation) => (conversation ? `claude --resume ${conversation}` : "claude --continue"),
+    conversationInArgs: (args) => {
+      for (let i = 0; i < args.length; i++) {
+        const [flag, inline] = args[i]!.split("=", 2);
+        if (!["--resume", "-r", "--session-id"].includes(flag!)) continue;
+        const value = inline ?? args[i + 1] ?? "";
+        if (UUID.test(value) && !args.includes("--fork-session")) return value;
+      }
+      return null;
+    },
     carry: {
       "--dangerously-skip-permissions": 0,
       "--allow-dangerously-skip-permissions": 0,
@@ -47,8 +64,11 @@ export const AGENTS: Agent[] = [
   {
     name: "codex",
     matches: (program) => ["codex", "codex.js"].includes(basename(program)) || program.includes("@openai/codex/"),
-    // "To continue this session, run:" and "codex resume ID", on the same line or the next.
-    hint: /(?<=^|\s)codex resume \S+/gm,
+    resume: (conversation) => (conversation ? `codex resume ${conversation}` : "codex resume --last"),
+    conversationInArgs: (args) => {
+      const at = args.indexOf("resume");
+      return at < 0 ? null : (args.slice(at + 1).find((arg) => UUID.test(arg)) ?? null);
+    },
     carry: {
       "--dangerously-bypass-approvals-and-sandbox": 0,
       "--yolo": 0,
@@ -71,6 +91,14 @@ export const AGENTS: Agent[] = [
     },
   },
 ];
+
+export function agentNamed(name: string): Agent | undefined {
+  return AGENTS.find((agent) => agent.name === name);
+}
+
+export function isConversationId(value: string): boolean {
+  return UUID.test(value);
+}
 
 const RUNTIMES = new Set(["node", "nodejs", "bun", "deno"]);
 
@@ -104,31 +132,7 @@ export function shellQuote(word: string): string {
   return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`;
 }
 
-/** The command that resumes: the agent's own hint (already quoted for a shell), plus the kept flags. */
-export function resumeCommand(hint: string, flags: string[]): string {
-  return [hint, ...flags.map(shellQuote)].join(" ");
-}
-
-/**
- * The resume command the agent printed between two readings of the screen. Only a new one
- * counts: the screen may still show older ones, from an earlier exit or the command that
- * resumed this very session. Returns the last new one, or null.
- */
-export function findNewHint(agent: Agent, before: string, after: string): string | null {
-  const hints = (text: string) => [...text.matchAll(agent.hint)].map((match) => match[0].trim());
-  const now = hints(after);
-  return now.length > hints(before).length ? now.at(-1)! : null;
-}
-
-/** Plain text from terminal output: escape sequences removed, lines trimmed. */
-export function terminalText(data: string): string {
-  return data
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "") // OSC
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "") // CSI
-    .replace(/\x1b[()][0-9A-Za-z]/g, "") // character sets
-    .replace(/\x1b[@-_]/g, "") // other escapes
-    .replace(/\r/g, "")
-    .split("\n")
-    .map((line) => line.trimEnd())
-    .join("\n");
+/** The command that resumes a conversation with the given flags, quoted for the shell. */
+export function resumeCommand(agent: Agent, conversation: string | null, flags: string[]): string {
+  return [agent.resume(conversation), ...flags.map(shellQuote)].join(" ");
 }
