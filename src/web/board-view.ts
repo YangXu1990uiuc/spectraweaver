@@ -8,9 +8,9 @@
 // click opens its terminal. The window moves, resizes and goes to the taskbar like a terminal's.
 
 import type { BoardDirection, BoardTask, Frame, SessionView, TabView, TaskStatus } from "../common/protocol.ts";
-import { type BoardLayout, type Direction, fitScale, layoutBoard, type Size } from "./board-layout.ts";
-import { agoText, type TaskLive, taskLive } from "./board-live.ts";
-import { el, loadSetting, saveSetting } from "./dom.ts";
+import { type BoardLayout, type Direction, fitScale, layoutBoard, pickLayout, type Size } from "./board-layout.ts";
+import { type TaskLive, taskLive } from "./board-live.ts";
+import { ago, el, loadSetting, saveSetting } from "./dom.ts";
 import { WindowChrome } from "./window-chrome.ts";
 
 const CARD: Size = { width: 192, height: 60 };
@@ -31,8 +31,32 @@ export const DEFAULT_BOARD_FRAME: Omit<Frame, "z"> = { x: 0, y: 0, w: 0.6, h: 1 
 const STATUS_LABEL: Record<TaskStatus, string> = { todo: "to do", wip: "in progress", done: "done", blocked: "blocked" };
 
 /** The line a person gives an agent to make it keep the board. */
-export const LEAD_PROMPT =
+const LEAD_PROMPT =
   "Use spectraweaver to run worker terminals and keep this tab's task board; run `spectraweaver board --help` first.";
+
+/**
+ * Layouts by the board's shape (its tasks and dependencies, card size) and direction. Kept
+ * across tab switches, as the window is made anew for each tab: a large board is laid out
+ * again only when its tasks or dependencies change.
+ */
+const layouts = new Map<string, BoardLayout>();
+const KEPT_LAYOUTS = 8;
+
+function layoutOf(tasks: readonly BoardTask[], card: Size, direction: Direction, shape: string): BoardLayout {
+  const key = `${direction} ${shape}`;
+  let layout = layouts.get(key);
+  if (!layout) {
+    layout = layoutBoard(tasks, card, direction);
+    layouts.set(key, layout);
+    if (layouts.size > KEPT_LAYOUTS) layouts.delete(layouts.keys().next().value!);
+  }
+  return layout;
+}
+
+/** What a terminal's card shows of it: its board redraws only when this changes. */
+function shownState(session: SessionView | undefined): unknown {
+  return session ? [session.agent, session.exited !== null, session.atPrompt, session.banner] : null;
+}
 
 export interface BoardWindowOptions {
   /** The element windows are positioned in. */
@@ -99,8 +123,10 @@ export class BoardWindow {
   private sessions: ReadonlyMap<string, SessionView> = new Map();
   private selected: string | null = null;
   private layout: BoardLayout | null = null;
-  /** The board laid out both ways, for the tasks and dependencies it was laid out for. */
-  private layouts: { key: string; ways: Record<Direction, BoardLayout> } | null = null;
+  /** The finished tasks the arrows were drawn for (finished ones are solid). */
+  private drawnDone = "";
+  /** What the board showed last (update skips a render when nothing it shows changed). */
+  private shown = "";
   /** The zoom chosen by hand, per browser like a terminal's text size; null fits the window. */
   private zoom: number | null;
   /** The scale the graph is drawn at now. */
@@ -256,6 +282,9 @@ export class BoardWindow {
 
   setFrame(frame: Frame | null): void {
     this.frame = frame;
+    this.chrome.setEnabled(frame !== null);
+    // While it is being dragged, the window is where the pointer put it.
+    if (this.chrome.active) return;
     const style = this.root.style;
     if (frame) {
       style.left = `${(frame.x * 100).toFixed(2)}%`;
@@ -264,13 +293,25 @@ export class BoardWindow {
       style.height = `${(frame.h * 100).toFixed(2)}%`;
       style.zIndex = String(frame.z + 1);
     }
-    this.chrome.setEnabled(frame !== null);
   }
 
-  /** Shows the tab's board as it is now, with the terminals as they are now. */
+  /**
+   * Shows the tab's board as it is now, with the terminals as they are now; nothing is redrawn
+   * unless the board, its direction or a terminal it shows changed.
+   */
   update(tab: TabView, sessions: ReadonlyMap<string, SessionView>): void {
     this.tab = tab;
     this.sessions = sessions;
+    const board = tab.board;
+    const shown = JSON.stringify([
+      tab.name,
+      board?.updatedAt,
+      tab.boardWindow?.direction,
+      board?.lead ? shownState(sessions.get(board.lead)) : null,
+      (board?.tasks ?? []).map((task) => (task.session ? shownState(sessions.get(task.session)) : null)),
+    ]);
+    if (shown === this.shown) return;
+    this.shown = shown;
     this.render();
   }
 
@@ -332,64 +373,75 @@ export class BoardWindow {
     );
     this.doneText.textContent = `${done}/${total} done`;
     const lead = board.lead ? this.sessions.get(board.lead) : undefined;
-    this.updated.textContent = `${board.lead ? "lead updated" : "updated"} ${agoText(now - board.updatedAt)}`;
+    this.updated.textContent = `${board.lead ? "lead updated" : "updated"} ${ago(board.updatedAt, now)}`;
     this.updated.title = new Date(board.updatedAt).toLocaleString();
     this.leadButton.hidden = !lead;
     if (lead) {
       const live = taskLive({ id: "", title: "", status: "todo", session: lead.id }, lead, now);
-      const badge = el("span", { class: `badge agent ${live?.kind ?? "idle"}` }, [live?.text || "shell"]);
-      this.leadButton.replaceChildren(lead.banner || "lead", badge);
+      const name = lead.banner || "lead";
+      const text = live?.text || "shell";
+      // Rebuilt only when it changed: a button replaced under the pointer loses the click.
+      if (this.leadButton.dataset.shown !== `${name}\n${text}\n${live?.kind}`) {
+        this.leadButton.dataset.shown = `${name}\n${text}\n${live?.kind}`;
+        this.leadButton.replaceChildren(name, el("span", { class: `badge agent ${live?.kind ?? "idle"}` }, [text]));
+      }
       this.leadButton.title = "Show the lead's terminal";
       this.leadButton.classList.toggle("alarm", live?.alarm === "red");
     }
   }
 
   /**
-   * Lays the graph out again when its tasks or dependencies changed (both ways, which is the
-   * costly part), takes the way that fits the window better, draws the arrows (their colour
-   * follows the statuses) and fits the graph to the window.
+   * Takes the layout for the board's shape (laid out again only when its tasks or dependencies
+   * changed) in the direction chosen, or whichever fits the window better; draws the arrows
+   * (solid from finished tasks) and fits the graph to the window.
    */
   private relayout(): void {
     const board = this.tab.board;
     if (!board || this.graph.hidden) return;
     const compact = board.tasks.length > COMPACT_AFTER;
-    const key = JSON.stringify([compact, board.tasks.map((task) => [task.id, task.after ?? []])]);
-    if (this.layouts?.key !== key) {
-      const card = compact ? COMPACT_CARD : CARD;
-      this.layouts = { key, ways: { down: layoutBoard(board.tasks, card, "down"), right: layoutBoard(board.tasks, card, "right") } };
-    }
-    const { down, right } = this.layouts.ways;
+    const card = compact ? COMPACT_CARD : CARD;
+    const shape = JSON.stringify([compact, board.tasks.map((task) => [task.id, task.after ?? []])]);
     const area = this.area();
     const chosen = this.tab.boardWindow?.direction;
-    const next = chosen ? this.layouts.ways[chosen] : fitScale(right, area) > fitScale(down, area) + 0.01 ? right : down;
+    const way = (direction: Direction) => layoutOf(board.tasks, card, direction, shape);
+    const next = chosen ? way(chosen) : pickLayout(way("down"), way("right"), area);
     this.directionButton.textContent = `${next.direction === "down" ? "↓" : "→"}${chosen ? "" : " auto"}`;
     this.directionButton.title = chosen
       ? `The graph runs ${chosen === "down" ? "top to bottom" : "left to right"} for everyone. Click: ${
           chosen === "down" ? "left to right" : "whichever fits the window"
         }.`
       : "The graph runs whichever way fits the window better. Click: top to bottom.";
-    this.layout = next;
     this.root.classList.toggle("compact", compact);
-    const done = new Set(board.tasks.filter((task) => task.status === "done").map((task) => task.id));
-    const paths = { done: "", doneHeads: "", waiting: "", waitingHeads: "" };
-    for (const edge of next.edges) {
-      const kind = done.has(edge.from) ? "done" : "waiting";
-      paths[kind] += `${edge.path} `;
-      paths[`${kind}Heads`] += `${edge.head} `;
-    }
-    for (const [name, element] of Object.entries(this.edges)) element.setAttribute("d", paths[name as keyof typeof paths]);
-    this.svg.setAttribute("width", String(next.width));
-    this.svg.setAttribute("height", String(next.height));
-    this.canvas.style.width = `${next.width}px`;
-    this.canvas.style.height = `${next.height}px`;
-    for (const [id, card] of this.cards) {
-      const placed = next.cards.get(id);
-      if (placed) {
-        card.style.left = `${placed.x}px`;
-        card.style.top = `${placed.y}px`;
+    const done = board.tasks.filter((task) => task.status === "done").map((task) => task.id);
+    const doneKey = done.join("\n");
+    if (next !== this.layout || doneKey !== this.drawnDone) {
+      const finished = new Set(done);
+      const paths = { done: "", doneHeads: "", waiting: "", waitingHeads: "" };
+      for (const edge of next.edges) {
+        const kind = finished.has(edge.from) ? "done" : "waiting";
+        paths[kind] += `${edge.path} `;
+        paths[`${kind}Heads`] += `${edge.head} `;
       }
+      for (const [name, element] of Object.entries(this.edges)) element.setAttribute("d", paths[name as keyof typeof paths]);
+      this.drawnDone = doneKey;
+    }
+    if (next !== this.layout) {
+      this.layout = next;
+      this.svg.setAttribute("width", String(next.width));
+      this.svg.setAttribute("height", String(next.height));
+      this.canvas.style.width = `${next.width}px`;
+      this.canvas.style.height = `${next.height}px`;
+      for (const [id, card] of this.cards) this.place(card, id);
     }
     this.fit(area);
+  }
+
+  /** Puts a card where the layout has it. */
+  private place(card: HTMLElement, id: string): void {
+    const placed = this.layout?.cards.get(id);
+    if (!placed) return;
+    card.style.left = `${placed.x}px`;
+    card.style.top = `${placed.y}px`;
   }
 
   /** The room the graph has, in CSS px. */
@@ -456,7 +508,6 @@ export class BoardWindow {
 
   private renderCards(lives: Map<string, TaskLive | null>): void {
     const board = this.tab.board!;
-    const layout = this.layout!;
     const compact = board.tasks.length > COMPACT_AFTER;
     const ids = new Set(board.tasks.map((task) => task.id));
     for (const [id, card] of this.cards) {
@@ -472,14 +523,18 @@ export class BoardWindow {
         card = this.createCard(task.id);
         this.cards.set(task.id, card);
         this.canvas.appendChild(card);
+        this.place(card, task.id);
       }
-      const placed = layout.cards.get(task.id)!;
-      card.style.left = `${placed.x}px`;
-      card.style.top = `${placed.y}px`;
       const live = lives.get(task.id) ?? null;
-      card.className = `task status-${task.status}${live?.alarm === "red" ? " alarm" : live?.alarm === "amber" ? " asking" : ""}${
+      const className = `task status-${task.status}${live?.alarm === "red" ? " alarm" : live?.alarm === "amber" ? " asking" : ""}${
         this.selected === task.id ? " selected" : ""
       }`;
+      if (card.className !== className) card.className = className;
+      // Its content is rebuilt only when it changed: a card's text replaced under the pointer
+      // would lose the click (and the double click) on it.
+      const content = JSON.stringify([compact, task.title, task.status, task.note, live?.terminal, live?.text, live?.kind]);
+      if (card.dataset.shown === content) continue;
+      card.dataset.shown = content;
       const id = el("span", { class: "task-id" }, [task.id]);
       const title = el("span", { class: "task-title" }, [task.title]);
       if (compact) {
@@ -547,7 +602,10 @@ export class BoardWindow {
       parts.push(el("span", { class: "board-muted" }, [`after ${waits}`]));
     }
     if (task.note) parts.push(el("span", {}, [task.note]));
-    if (task.link) parts.push(el("a", { href: task.link, target: "_blank", rel: "noopener noreferrer" }, ["link ↗"]));
+    // The server only stores http(s) links; checked again here, as meta.json can be edited by hand.
+    if (task.link && /^https?:\/\//i.test(task.link)) {
+      parts.push(el("a", { href: task.link, target: "_blank", rel: "noopener noreferrer" }, ["link ↗"]));
+    }
     const live = lives.get(task.id);
     parts.push(el("span", { class: "spacer" }));
     parts.push(

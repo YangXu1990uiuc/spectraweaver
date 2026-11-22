@@ -44,6 +44,8 @@ beforeAll(async () => {
     CODEX_HOME: codexDir,
     SPECTRAWEAVER_CONFIG_DIR: temp.paths.configDir,
     SPECTRAWEAVER_STATE_DIR: temp.paths.stateBase,
+    // Run from a SpectraWeaver terminal, the tests must not look for that terminal here.
+    SPECTRAWEAVER_SESSION_ID: undefined,
   };
   daemon = await startDaemon({ paths: temp.paths, shellArgv: TEST_SHELL, env, log: () => {} });
   server = await startServer({
@@ -53,6 +55,7 @@ beforeAll(async () => {
     log: () => {},
     revivalEveryMs: 200,
     statusEveryMs: 100,
+    statusQuietMs: 300,
     agentDirs: { claude: claudeDir, codex: codexDir },
   });
   // What `spectraweaver server` writes, so the commands find this one.
@@ -122,6 +125,12 @@ const typedLines = () =>
 function expectAgent(agent: AgentStatus | undefined, expected: Partial<AgentStatus>): boolean {
   return agent !== undefined && Object.entries(expected).every(([key, value]) => agent[key as keyof AgentStatus] === value);
 }
+
+test("a command given as several words keeps each word whole", async () => {
+  const id = (await cli("new", "--cwd", project, "--", "echo", "two  spaces", "it's")).trim();
+  expect((await session(id))?.cmd).toBe("echo 'two  spaces' 'it'\\''s'");
+  await cli("close", id);
+});
 
 test("terminals opened from the command line land in their tab, and their agents' states show", async () => {
   const id = (await cli("new", "--tab", "Workers", "--banner", "w1", "--cwd", project, "--", "claude")).trim();
@@ -252,10 +261,21 @@ test("a coordinating agent's board: pushed from its terminal, with its workers i
 test("commands say plainly what is wrong", async () => {
   const missing = await run(["read", "ffffffff"]);
   expect(missing.code).toBe(1);
-  expect(missing.err).toContain("no such session: ffffffff");
+  expect(missing.err).toContain("no such terminal: ffffffff");
   const send = await run(["send", "ffffffff", "hello"]);
   expect(send.code).toBe(1);
   expect(send.err).toContain("no such terminal: ffffffff");
   const key = await run(["send", "ffffffff", "--key", "hyperspace"]);
   expect(key.err).toContain("unknown key: hyperspace");
+  const dashes = await run(["send", "ffffffff", "git", "push", "--force"]);
+  expect(dashes.err).toContain("unknown option --force; to pass text that starts with --, put -- before the text");
+  // Asking for help runs nothing; an argument a command does not take is refused.
+  const help = await run(["down", "-h"]);
+  expect(help.code).toBe(0);
+  expect(help.out).toContain("Usage:");
+  expect((await run(["board", "set", "--help"])).out).toContain("spectraweaver board: the task board of a tab");
+  const extra = await run(["token", "extra"]);
+  expect(extra.code).toBe(1);
+  expect(extra.err).toContain('spectraweaver token takes no argument "extra"');
+  expect((await run(["board", "sett"])).err).toContain("unknown board command: sett");
 }, 30_000);

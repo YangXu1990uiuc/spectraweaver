@@ -61,6 +61,8 @@ export class WindowChrome {
   private readonly badge: HTMLSpanElement;
   private enabled = false;
   private dragging = false;
+  /** Ends the drag in progress without committing it. */
+  private cancelDrag: (() => void) | null = null;
 
   constructor(private readonly options: WindowChromeOptions) {
     for (const side of Object.keys(SIDES) as Side[]) {
@@ -94,7 +96,14 @@ export class WindowChrome {
     for (const handle of this.handles) handle.hidden = !enabled;
   }
 
+  /** A move or resize is in progress: the window's place is the pointer's until it ends. */
+  get active(): boolean {
+    return this.dragging;
+  }
+
+  /** Ends any drag (its listeners, the page's drag classes) and removes the handles. */
   dispose(): void {
+    this.cancelDrag?.();
     for (const handle of this.handles) handle.remove();
     this.ghost.remove();
   }
@@ -124,7 +133,7 @@ export class WindowChrome {
   private startMove(event: PointerEvent): void {
     if (!this.enabled || this.dragging || event.button !== 0) return;
     const target = event.target as HTMLElement;
-    if (target.closest("button, select, .grip")) return;
+    if (target.closest("button, .grip")) return;
     const frame = this.options.frame();
     const workspace = this.workspaceArea();
     if (!frame || !workspace) return;
@@ -161,6 +170,7 @@ export class WindowChrome {
       document.body.classList.remove("moving-window");
       this.endSnapping();
       this.dragging = false;
+      this.cancelDrag = null;
       if (moved) {
         if (commit && (rect.left !== start.left || rect.top !== start.top)) {
           this.options.commit(rectToFrame(rect, workspace, frame.z), null);
@@ -188,6 +198,7 @@ export class WindowChrome {
     header.addEventListener("pointercancel", cancel);
     header.addEventListener("lostpointercapture", cancel);
     window.addEventListener("keydown", key, true);
+    this.cancelDrag = cancel;
   }
 
   private startResize(event: PointerEvent, handle: HTMLElement, edges: Edges): void {
@@ -240,6 +251,7 @@ export class WindowChrome {
       this.endSnapping();
       this.ghost.hidden = true;
       this.dragging = false;
+      this.cancelDrag = null;
       const { rect, cells } = result;
       const sameRect =
         rect.left === start.left && rect.top === start.top && rect.width === start.width && rect.height === start.height;
@@ -263,6 +275,7 @@ export class WindowChrome {
     handle.addEventListener("pointercancel", cancel);
     handle.addEventListener("lostpointercapture", cancel);
     window.addEventListener("keydown", key, true);
+    this.cancelDrag = cancel;
     show();
   }
 }

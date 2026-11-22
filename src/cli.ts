@@ -11,12 +11,12 @@ import { autostartLine, findAutostart, readCrontab, withAutostart, writeCrontab 
 import { loadInstance, loadSettings, migrateOlderState, saveInstance, saveSettings } from "./common/config.ts";
 import { networkFilesystem, writeFileAtomic } from "./common/files.ts";
 import { isLoopbackAddress, pickFreePort, portIsFree } from "./common/net.ts";
-import { ensurePrivateDir, expandHome, hostKey, MAX_SOCKET_PATH, type Paths, resolvePaths } from "./common/paths.ts";
-import { fail, FIRST_PORT, flag, parseFlags, USAGE } from "./cli-args.ts";
+import { ensurePrivateDir, expandHome, hostKey, type Paths, requireSocket, resolvePaths, socketPathProblem } from "./common/paths.ts";
+import { asksForHelp, fail, FIRST_PORT, flag, noArguments, parseFlags, USAGE } from "./cli-args.ts";
 import { daemonCall, daemonHello, isAlive, readServerState, type ServerState, serverUrl } from "./client.ts";
 import type { SessionInfo } from "./common/protocol.ts";
 import { VERSION } from "./common/version.ts";
-import { cmdBoard } from "./board-cli.ts";
+import { BOARD_HELP, cmdBoard } from "./board-cli.ts";
 import { cmdBanner, cmdClose, cmdList, cmdNew, cmdRead, cmdSend, cmdShowHide } from "./control.ts";
 
 const PORT_SEARCH = 100;
@@ -49,7 +49,7 @@ function checkRemoteExposure(host: string, optedIn: boolean): void {
 
 /** Command line that re-runs this program, whether compiled or run from source with bun. */
 function selfArgv(args: string[]): string[] {
-  const compiled = Bun.main.startsWith("/$bunfs/") || /^[A-Za-z]:[\\/]~BUN[\\/]/.test(Bun.main);
+  const compiled = Bun.main.startsWith("/$bunfs/");
   return compiled ? [process.execPath, ...args] : [process.execPath, Bun.main, ...args];
 }
 
@@ -107,13 +107,41 @@ function lanAddresses(): string[] {
 }
 
 /** The server's health report, or null if nothing (or not SpectraWeaver) answers there. */
-async function probeServer(url: string): Promise<{ uid: number | null } | null> {
+async function probeServer(url: string): Promise<{ uid: number | null; pid: number | null } | null> {
   try {
     const response = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(1000) });
-    const health = (await response.json()) as { ok?: boolean; uid?: number | null };
-    return response.ok && health.ok === true ? { uid: health.uid ?? null } : null;
+    const health = (await response.json()) as { ok?: boolean; uid?: number | null; pid?: number | null };
+    return response.ok && health.ok === true ? { uid: health.uid ?? null, pid: health.pid ?? null } : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * The server server.json names, if that process is one: it answers on its port with its pid, or
+ * (hung, or older than naming its pid) it runs `spectraweaver server`. After a crash or a power
+ * cut the file can name a pid another program has since been given; then the file is removed,
+ * and nothing is stopped.
+ */
+async function verifiedServer(paths: Paths): Promise<ServerState | null> {
+  const server = readServerState(paths);
+  if (!server) return null;
+  const probe = await probeServer(serverUrl(server.host, server.port));
+  if (probe?.pid != null ? probe.pid === server.pid : runsServer(server.pid)) return server;
+  rmSync(paths.serverStateFile, { force: true });
+  return null;
+}
+
+/** Whether a process runs `spectraweaver server` (the binary, or src/cli.ts under Bun). */
+function runsServer(pid: number): boolean {
+  try {
+    const argv =
+      process.platform === "linux"
+        ? readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")
+        : Bun.spawnSync(["ps", "-ww", "-o", "command=", "-p", String(pid)]).stdout.toString().trim().split(/\s+/);
+    return argv.includes("server") && argv.some((part) => /spectraweaver|cli\.ts$/.test(part));
+  } catch {
+    return false;
   }
 }
 
@@ -159,12 +187,13 @@ async function cmdUp(args: string[]): Promise<void> {
   const flags = parseFlags(args, ["port", "host", "allow-host", "allow-remote"]);
   for (const change of migrateOlderState(resolvePaths())) console.log(change);
   const paths = resolvePaths();
+  requireSocket(paths);
   ensurePrivateDir(paths.stateDir);
   const instance = loadInstance(paths);
   const requestedPort = flag(flags, "port");
+  noArguments(flags, "up");
   const host = flag(flags, "host") ?? instance.host ?? DEFAULT_HOST;
   const allowHosts = flags.values.get("allow-host") ?? instance.allowHosts ?? [];
-  checkRemoteExposure(host, flag(flags, "allow-remote") !== undefined || instance.host === host);
 
   if (await daemonHello(paths)) {
     console.log("daemon  already running");
@@ -178,18 +207,25 @@ async function cmdUp(args: string[]): Promise<void> {
 
   let url: string; // for probing the server from here
   let link: string; // for opening in a browser
-  const running = readServerState(paths);
+  const running = await verifiedServer(paths);
   if (running) {
     url = serverUrl(running.host, running.port);
     link = browserUrl(running.host, running.port);
-    if (requestedPort && Number(requestedPort) !== running.port) {
-      fail(`the server already runs on port ${running.port}; run \`spectraweaver down\` first to change it`);
-    }
+    const change =
+      requestedPort && Number(requestedPort) !== running.port
+        ? `runs on port ${running.port}`
+        : flag(flags, "host") && flag(flags, "host") !== running.host
+          ? `listens on ${running.host}`
+          : flags.values.has("allow-host")
+            ? "has its allowed names"
+            : null;
+    if (change) fail(`the server already ${change}; run \`spectraweaver down\` first to change it`);
     if (!(await waitFor(() => isOwnServer(url), 5000))) {
       fail(`the server (pid ${running.pid}) is not responding; see ${paths.serverLog}`);
     }
     console.log(`server  already running at ${link}`);
   } else {
+    checkRemoteExposure(host, flag(flags, "allow-remote") !== undefined || instance.host === host);
     let port = requestedPort ? Number(requestedPort) : instance.port;
     if (port === undefined) {
       port = pickFreePort(host, FIRST_PORT, PORT_SEARCH) ?? undefined;
@@ -252,11 +288,12 @@ async function cmdUp(args: string[]): Promise<void> {
 
 async function cmdDown(args: string[]): Promise<void> {
   const flags = parseFlags(args, ["all"]);
+  noArguments(flags, "down");
   const paths = resolvePaths();
-  const server = readServerState(paths);
+  const server = await verifiedServer(paths);
   if (server) {
     process.kill(server.pid, "SIGTERM");
-    await waitFor(async () => !isAlive(server.pid), 5000);
+    if (!(await waitFor(async () => !isAlive(server.pid), 5000))) fail(`the server (pid ${server.pid}) did not stop`);
     console.log("server  stopped");
   } else {
     console.log("server  not running");
@@ -268,7 +305,7 @@ async function cmdDown(args: string[]): Promise<void> {
     return;
   }
   process.kill(hello.pid, "SIGTERM");
-  await waitFor(async () => !isAlive(hello.pid), 5000);
+  if (!(await waitFor(async () => !isAlive(hello.pid), 5000))) fail(`the daemon (pid ${hello.pid}) did not stop`);
   console.log("daemon  stopped (all sessions ended)");
 }
 
@@ -281,8 +318,8 @@ async function cmdStatus(): Promise<void> {
   } else {
     console.log("daemon  not running");
   }
-  const server = readServerState(paths);
-  if (server) console.log(`server  running  pid ${server.pid}  ${serverUrl(server.host, server.port)}`);
+  const server = await verifiedServer(paths);
+  if (server) console.log(`server  running  pid ${server.pid}  ${browserUrl(server.host, server.port)}`);
   else console.log("server  not running");
   console.log(`login   ${existsSync(paths.passwordFile) ? "password or token" : "token (no password set)"}`);
   console.log(`state   ${paths.stateDir}`);
@@ -356,6 +393,7 @@ async function cmdAutostart(args: string[]): Promise<void> {
 
 async function cmdPasswd(args: string[]): Promise<void> {
   const flags = parseFlags(args, ["clear"]);
+  noArguments(flags, "passwd");
   const paths = resolvePaths();
   const { clearPassword, setPassword, validatePassword } = await import("./server/auth.ts");
   if (flag(flags, "clear")) {
@@ -375,14 +413,16 @@ async function cmdPasswd(args: string[]): Promise<void> {
 
 async function cmdToken(args: string[]): Promise<void> {
   const flags = parseFlags(args, ["rotate"]);
+  noArguments(flags, "token");
   const paths = resolvePaths();
   const { loadOrCreateToken, rotateToken } = await import("./server/auth.ts");
   const token = flag(flags, "rotate") ? rotateToken(paths.tokenFile) : loadOrCreateToken(paths.tokenFile);
   const server = readServerState(paths);
   const instance = loadInstance(paths);
+  // As `up` prints it: a server on every interface is reached by this host's name.
   const url = server
-    ? serverUrl(server.host, server.port)
-    : serverUrl(instance.host ?? DEFAULT_HOST, instance.port ?? FIRST_PORT);
+    ? browserUrl(server.host, server.port)
+    : browserUrl(instance.host ?? DEFAULT_HOST, instance.port ?? FIRST_PORT);
   console.log(token);
   console.log(`\nLogin link: ${url}/#token=${token}`);
   if (flag(flags, "rotate")) console.log("The old token and every browser login are no longer valid.");
@@ -439,10 +479,8 @@ async function cmdConfig(args: string[]): Promise<void> {
     const target = flags.rest[0];
     if (!target) fail("usage: spectraweaver config state-dir PATH | --reset");
     const base = resolve(expandHome(target));
-    const socket = join(base, hostKey(), "daemon.sock");
-    if (socket.length > MAX_SOCKET_PATH) {
-      fail(`${base} is too long a path for the daemon's socket (${socket.length} bytes, limit ${MAX_SOCKET_PATH}); choose a shorter one.`);
-    }
+    const problem = socketPathProblem(join(base, hostKey(), "daemon.sock"));
+    if (problem) fail(`${base} is a path ${problem} for the daemon's socket; choose a shorter one.`);
     ensurePrivateDir(join(base, hostKey()));
     settings.stateDir = base;
   }
@@ -509,6 +547,11 @@ async function cmdServer(args: string[]): Promise<void> {
 
 const [command, ...args] = process.argv.slice(2);
 try {
+  // `spectraweaver down -h` asks how to use it; it must not stop anything.
+  if (command !== undefined && asksForHelp(args)) {
+    console.log(command === "board" ? BOARD_HELP : USAGE);
+    process.exit(0);
+  }
   switch (command) {
     case "up":
       await cmdUp(args);
@@ -517,6 +560,7 @@ try {
       await cmdDown(args);
       break;
     case "status":
+      noArguments(parseFlags(args, []), "status");
       await cmdStatus();
       break;
     case "autostart":

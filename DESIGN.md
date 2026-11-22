@@ -65,13 +65,13 @@ Browser (any device)
         │  HTTPS/WSS, or an SSH tunnel to localhost
         ▼
 spectraweaver server   (restart any time)
-  HTTP + WebSocket gateway · auth · status engine · agent hook endpoint
+  HTTP + WebSocket gateway · auth · agent status · task boards
   tabs / banners in JSON files (no SQLite: its locking is unreliable on NFS) · static UI
         │  Unix socket, versioned protocol
         ▼
 spectraweaver daemon   (small, rarely restarted)
   PTYs (Bun.Terminal) · one @xterm/headless engine per session
-  mode tracker · query responder · ring buffer · raw logs
+  mode tracker · query responder · scrollback
         │
         ▼
 $SHELL → claude / codex / gemini / anything
@@ -82,9 +82,9 @@ One binary provides both processes plus the CLI (§11): `spectraweaver daemon`, 
 ### 3.1 Who owns what
 
 - **Daemon: PTY-level facts.**
-  - Session id, command, cwd, environment overrides, size, pid.
+  - Session id, command, cwd, size, pid.
   - Created and exited times, exit status.
-  - The ring buffer, the raw log, and the terminal engine state.
+  - The terminal engine's state: screen and scrollback (§7.1).
 - **Server: everything presentational.**
   - Banners, layouts, zoom levels, settings.
   - Status, what would restore each terminal (§7.3), and agent metadata.
@@ -95,9 +95,8 @@ One binary provides both processes plus the CLI (§11): `spectraweaver daemon`, 
 - **Starting.** `spectraweaver up` starts both processes detached, with `setsid`. `spectraweaver autostart on` has cron run it at boot (§10).
   - On distros with `KillUserProcesses=yes` (the upstream systemd default; Ubuntu ships `no`), processes started from an SSH login die at logout unless linger is enabled.
 - **Server restarts are free** (upgrades, crashes).
-- **Daemon restarts are never automatic** on upgrade.
-  - The UI shows "daemon update pending: restarting ends N running sessions", and the user picks the moment.
-  - The protocol is versioned, so a newer server can talk to an older daemon (it supports versions N and N−1).
+- **Daemon restarts are never automatic** on upgrade: restarting ends every session, so the user picks the moment (`spectraweaver down --all`, `up`, then **↻ Restore**, §7.3).
+  - Server and daemon must speak the same protocol version. Requests added since protocol 1's first set (`resize`, `text`) are announced in the hello reply as features, so a newer server works with an older daemon, and says what needs a restarted one.
 - **Later hardening (not in the MVP):** keep sessions alive across daemon upgrades, by either:
   - moving PTY ownership into tiny per-session holder processes, or
   - parking the PTY master file descriptors in systemd's fd store (`FileDescriptorStoreMax=`, `FDSTORE=1`).
@@ -116,9 +115,9 @@ Company home directories are often small and shared over NFS by several hosts, s
   3. `stateDir` in `config.json`, set with `spectraweaver config state-dir PATH`; this is the way to keep state on a local or bigger disk without setting environment variables everywhere;
   4. `$XDG_STATE_HOME/spectraweaver/` (default `~/.local/state/spectraweaver/`).
 - **A host's state directory holds:**
-  - `daemon.sock`, `daemon.pid`, `server.json`, and the daemon and server logs (rotated at 5 MB);
+  - `daemon.sock`, `daemon.pid`, `server.json`, and the daemon and server logs (each moved aside, once past 5 MB, when `up` starts its process);
   - `instance.json`: the instance id (names the login cookie) and the remembered port and host;
-  - `meta.json`: tabs, and for each session its banner, colour, tab, window, and what would restore it (§7.3);
+  - `meta.json`: tabs (with their task boards, §8.7), and for each session its banner, colour, tab, window, whether it is put away, and what would restore it (§7.3);
   - `sessions/<id>/`, with log segments and the last snapshot (later; potentially large, hence the movable state directory).
 - **Moving state.** `spectraweaver config state-dir` refuses while SpectraWeaver runs (the running daemon would be lost track of) and copies the tabs and instance settings to the new place.
 - **Older directories.** Earlier versions kept state directly in the state base (the flat layout), and the project was first called workstreams (`~/.config/workstreams/`, `~/.local/state/workstreams/`). A daemon started in an older directory keeps using it while it runs, so upgrading only the server keeps every session. `up` copies the former config directory rather than moving it, because other hosts sharing it may still run the old version. Once no daemon runs in an older state directory, `up` moves this host's `meta.json` and `instance.json` out of it.
@@ -128,38 +127,35 @@ Company home directories are often small and shared over NFS by several hosts, s
 **NFS.** SpectraWeaver never uses file locks and never uses SQLite, the usual causes of trouble on NFS (VS Code Server's lock files are an example). Every file is written to a temporary name and renamed into place, which is atomic on NFS, and nothing relies on inotify. Changes made on another host (a new password, say) are noticed by polling file stamps, after the NFS attribute cache expires. The one NFS-sensitive piece is the daemon's Unix socket file:
 - per-host directories keep other hosts from mistaking it for a stale socket and deleting it;
 - some NFS servers refuse to create socket files; the daemon then says so and suggests a local state directory;
-- `up`, `status` and `config` point out when the state directory is on a network filesystem (NFS, SMB, Lustre, GPFS, CephFS, AFS), since a local disk is faster.
+- `up` and `config` point out when the state directory is on a network filesystem (NFS, SMB, Lustre, GPFS, CephFS, AFS), since a local disk is faster.
+- A state directory whose socket path would be too long for a Unix socket (about 100 bytes) is refused by the commands that need the socket, with the advice to run `spectraweaver config state-dir PATH`, which still runs.
 
 ### 3.4 Daemon protocol (server ↔ daemon)
 
-- **Framing.** Frames on the Unix socket are `u32 length | u8 kind | payload`.
-  - Kind 1 is a JSON control message.
-  - Kind 2 is output: session id, u64 stream offset, raw bytes.
-- **Handshake:** `{"hello": {"protocol": 1, "daemonVersion": "…"}}`. The reply names the requests the daemon answers beyond protocol 1's first set (`features`, e.g. `["resize", "text"]`), so a newer server or CLI can tell an older daemon what it needs; an unknown request is answered with an error rather than ignored. It also carries `instance`, random for each start of the daemon, which tells the server whether sessions missing from the list were closed or lost (§7.3).
+- **Framing.** Frames on the Unix socket are `u32 length | u8 kind | payload`, at most 64 MiB.
+  - Kind 1 is a JSON message: a request `{t: "req", id, op, …}` (id 0 is one-way and never answered), a response `{t: "res", id, ok, result | error}`, or an event `{t: "evt", ev}`.
+  - Kind 2 is output: session id, f64 stream offset, raw bytes. The server forwards these to browsers untouched.
+- **Handshake:** `{op: "hello", protocol: 1, client}`, answered with `{protocol, version, pid, features, instance}`. `features` names the requests the daemon answers beyond protocol 1's first set (`["resize", "text"]`), so a newer server or CLI can tell an older daemon what it needs; an unknown request is answered with an error rather than ignored. `instance` is random for each start of the daemon and tells the server whether sessions missing from the list were closed or lost (§7.3).
 - **Requests:**
   - `list`
-  - `create {cmd?, cwd, env, cols, rows}`
-  - `resize {id, cols, rows}` (§4.3)
-  - `text {id, lines?}`: the last `lines` lines as plain text (the screen by default, scrollback included past it), rows the terminal wrapped joined, with whether the alternate screen and bracketed paste are on and when the program last printed. For `spectraweaver read` and for telling what an agent shows (§8.2).
-  - `input {id, bytes}`
-  - `signal {id, sig}`
-  - `kill {id}`
-  - `subscribe {id, fromOffset?}`
-  - `unsubscribe {id}`
-  - `focus {id, clientId, focused}`
-- **`subscribe` reply.**
-  - If `fromOffset` is still inside the ring buffer, the daemon replays the missing bytes.
-  - Otherwise it sends a snapshot `{offset, cols, rows, data}`, followed by live output from `offset`.
+  - `create {cols, rows, cwd?, cmd?, tag?}`; `tag` is echoed in the `created` event (the server puts a tab id there)
+  - `resize {session, cols, rows}` (§4.3), answered once the engine has the new size
+  - `text {session, lines?}`: the last `lines` lines as plain text (the screen by default, scrollback included past it), rows the terminal wrapped joined, with whether the alternate screen and bracketed paste are on and when the program last printed. For `spectraweaver read` and for telling what an agent shows (§8.2).
+  - `input {session, data, binary?}`
+  - `subscribe {session}`: answered with a snapshot `{offset, cols, rows, data}`, after which live output follows from `offset`; `snapshot {session}` gives a fresh one to a subscriber
+  - `unsubscribe {session}`
+  - `focus {session, client, focused}`
+  - `close {session}`: SIGHUP, then SIGKILL after 3 seconds
 - **Events:**
-  - `created`, `exited {code, signal}`, `resized {cols, rows}`
-  - `title {text}`, `bell`, `notify {kind: "osc9" | "osc777", text}`
-  - `cwd {path}` (from OSC 7)
+  - `created {session, tag?}`, `exited {session, code, signal}`, `removed {session}`, `resized {session, cols, rows}`
+  - `title {session, title}`, `bell`, `notify {session, kind: "osc9" | "osc777", text}`
+  - `cwd {session, cwd}` (from OSC 7)
 
 ### 3.5 Server ↔ browser
 
 - **One WebSocket per tab**, multiplexing every session the tab shows.
 - **Framing.** It follows the daemon protocol: binary output frames tagged with session id and offset, plus JSON control messages.
-- **Resuming.** The browser remembers the last offset per session, so a brief disconnect resumes without a full snapshot.
+- **Snapshots, then offsets.** Every subscription, and every reconnection, starts from a snapshot; each output frame carries its stream offset, so a gap shows up as an error in testing rather than as garbled output. A browser that cannot keep up (32 MiB queued) is disconnected and starts again from snapshots.
 - **Hidden pages pause.** After 15 seconds in the background, a page unsubscribes from its sessions, and resubscribes for snapshots when it is shown again. Browsers throttle or freeze background pages, so output piled up unparsed (xterm.js even discards writes beyond 50 MB), and catching up kept terminals blank for a long time; a snapshot costs the same however long the page was away. If no snapshot arrives within 10 seconds of coming back, the connection is presumed dead (for example after sleep) and replaced.
 
 ## 4. Terminal size and display model
@@ -263,9 +259,9 @@ Dragging a window's edge is the explicit resize of §4.3, not a viewing action: 
 - **Environment added:**
   - `TERM=xterm-256color`, `COLORTERM=truecolor`
   - `TERM_PROGRAM=spectraweaver`, `TERM_PROGRAM_VERSION`
-  - `SPECTRAWEAVER_SESSION_ID`, `SPECTRAWEAVER_HOOK_TOKEN` (a per-session secret), `SPECTRAWEAVER_URL`
+  - `SPECTRAWEAVER_SESSION_ID` (hooks would add a per-session secret, §8.3)
   - A UTF-8 locale if none is set.
-- **Environment removed:** variables that belong to the terminal the daemon was started from: `VSCODE_*`, `TMUX`, `STY`, and the inherited `TERM_PROGRAM`.
+- **Environment removed:** variables that belong to the terminal the daemon was started from: `VSCODE_*`, `TMUX`, `STY`, the inherited `TERM_PROGRAM`, other terminals' own (`KITTY_*`, `WEZTERM_*`, …), Claude Code's session variables (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, …; by prefix, as new versions add more), and the starting terminal's `SPECTRAWEAVER_SESSION_ID`. Kept, as configuration: `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_USE_*` (the model provider), and `SPECTRAWEAVER_HOME`, `_CONFIG_DIR` and `_STATE_DIR`, so `spectraweaver` commands in a session reach the instance they run in.
 
 ### 5.2 Terminal engine
 
@@ -275,15 +271,14 @@ Dragging a window's edge is the explicit resize of §4.3, not a viewing action: 
   - kitty keyboard support, once pinned to xterm.js 6.1 or later;
   - `windowOptions` disabled.
 - **Output pipeline, per chunk:**
-  1. append it to the ring buffer (4 MiB by default) and to the raw log;
-  2. `engine.write(chunk, cb)`;
-  3. broadcast it to subscribers with its stream offset.
+  1. `engine.write(chunk)`;
+  2. send it to subscribers with its stream offset.
 - **Snapshot.**
-  1. Wait until the engine has processed everything up to offset X (the write callback).
+  1. Wait until the engine has processed everything up to offset X (a write callback).
   2. Serialize.
   3. Stream from X.
 
-  A snapshot contains the `SerializeAddon` output, then the mode tracker suffix (§5.3), then an explicit final cursor position (CUP) with cursor style and visibility.
+  A snapshot contains the `SerializeAddon` output, then the mode tracker suffix (§5.3), then an explicit final cursor position (CUP). It must fit in one frame, where JSON writes each control character as six bytes; a full scrollback of richly coloured text can pass that, and the snapshot then carries less scrollback (2000 lines, 200, none).
 
 ### 5.3 Mode tracker
 
@@ -298,14 +293,12 @@ It also has bugs:
 - the cursor ends up one column off after a full-row write (xterm.js #6165);
 - in the 0.15 beta, the scroll region is emitted after the cursor is placed.
 
-The tracker hooks the engine's parser, with CSI and OSC handlers that observe and then return `false` so default handling still runs. It records:
-- mouse encodings: DECSET/DECRST `1005`, `1006`, `1015`;
-- cursor visibility (`25`), focus reporting (`1004`), bracketed paste (`2004`);
-- DECSCUSR (cursor style);
-- the OSC 0/2 title and the OSC 7 cwd;
-- the kitty keyboard flag stack (`CSI > u`, `CSI < u`, `CSI = u`). A reconnecting client must encode keys the same way the program expects, or Shift+Enter and other keys break.
+Rather than hook the parser, the engine reads xterm.js's own state when a snapshot is taken and appends the sequences that re-establish it:
+- the SGR mouse encodings (`1006`, `1016`);
+- cursor style and blink (DECSCUSR) and visibility (`25`);
+- the scroll region (DECSTBM), then the cursor position (CUP), since DECSTBM homes the cursor.
 
-When a snapshot is taken, the tracker appends the sequences that re-establish this state.
+Not restored yet: the `1005`/`1015` mouse encodings, character sets, OSC 8 hyperlinks, and the kitty keyboard flag stack, which a reconnecting client needs to encode keys as the program expects (Shift+Enter and others) once kitty keyboard support is enabled. The title and the cwd are the daemon's (`title`, `cwd` events), not the snapshot's.
 
 ### 5.4 One responder for terminal queries
 
@@ -325,15 +318,15 @@ When a snapshot is taken, the tracker appends the sequences that re-establish th
 
 ### 5.6 Backpressure
 
-- **Coalescing.** Output is coalesced into frames of at most about 16 ms or 64 KiB.
-- **Slow subscribers.** A subscriber that falls more than N bytes behind is reset to "needs snapshot", rather than buffered without limit.
+- **No coalescing.** Each chunk the PTY gives is sent as a frame; Bun's reads are already batched.
+- **Slow connections.** A connection (the server) that falls 128 MiB behind is dropped; the server reconnects and every browser gets a fresh snapshot. The server, in turn, drops a browser 32 MiB behind (§3.5).
 - **Slow engine.** If the engine falls behind the PTY (for example, `cat` of a huge file), pause reading the PTY if the PTY API allows it. It is not yet known whether Bun.Terminal can (§14).
 
 ### 5.7 Logs and exit
 
-- **Raw logs.**
-  - Raw output is logged per session in rotating segments (default 64 MiB × 8), for the history viewer and search.
-  - For alt-screen programs the log is mostly redraw traffic. Their history lives inside the program and on disk (`~/.claude/projects/…`, `~/.codex/sessions/…`).
+- **Raw logs (later).**
+  - Raw output could be logged per session in rotating segments, for a history viewer and search (§7.2).
+  - For alt-screen programs such a log is mostly redraw traffic. Their history lives inside the program and on disk (`~/.claude/projects/…`, `~/.codex/sessions/…`).
 - **Exit.** When the child exits, the session stays visible with its final screen and exit status. Available actions:
   - **Restart:** same command, cwd and size.
   - **Restore** after a daemon restart: see §7.3.
@@ -389,7 +382,7 @@ When a snapshot is taken, the tracker appends the sequences that re-establish th
 
 ### 6.4 Tile header (the banner)
 
-- **Title.** User-set text, stored on the server and editable in place (in a windows layout the header drags the window, so a click without a drag edits the banner). It can also be set from inside the session with `spectraweaver banner "…"`, so an agent can be asked to keep its own banner current.
+- **Title.** User-set text, stored on the server and editable in place (in a windows layout the header drags the window, so a click without a drag edits the banner). It can also be set from inside the session with `spectraweaver banner "$SPECTRAWEAVER_SESSION_ID" "…"`, so an agent can be asked to keep its own banner current.
 - **Subtitle (automatic).** Whichever changed most recently:
   - the program's terminal title (OSC 0/2): Claude Code and Codex both set one, and Codex shows `[ ! ] Action Required` while it waits;
   - the last submitted prompt, from Claude Code's `UserPromptSubmit` hook.
@@ -565,7 +558,7 @@ The UI is a shell. Adversaries:
 - **Authentication** is always on, even on localhost, because other local users can reach 127.0.0.1.
   - **Token.** The first run generates a random token, stored in a 0600 file. `spectraweaver up` prints a login link with it in the URL fragment; the page exchanges it for a cookie and removes it from the address bar and history. `spectraweaver token --rotate` replaces it.
   - **Password (optional).** Set with `spectraweaver passwd` or in Settings, and stored as an argon2id hash. Once it is set, a bookmark of the plain URL is enough: the login page shows `user @ host`, so it is clear whose instance it is, and asks for the password.
-  - **Guessing is throttled.** Every local user connects from 127.0.0.1, so the limit is global: after five straight failures, each attempt waits out a lockout that doubles, up to 15 minutes. Token logins are exempt, since tokens cannot be guessed.
+  - **Guessing is throttled.** Every local user connects from 127.0.0.1, so the limit is global: after five straight failures, each attempt waits out a lockout that doubles, up to 15 minutes. An attempt counts before its password is checked, so guesses sent at once cannot all slip past the lock while the first are being verified. Token logins are exempt, since tokens cannot be guessed.
   - **The cookie** is HttpOnly and `SameSite=Strict`, marked `Secure` over HTTPS. Its value is an HMAC of the token and the password hash, not a stored session, so logins survive server restarts, while rotating the token or changing the password signs out every browser. Changing the password also drops all open WebSockets.
   - **The cookie name includes the instance id.** Browsers scope cookies by host, not port, so two instances tunnelled to localhost:7777 and localhost:7778 would otherwise overwrite each other's login.
 - **Origin and Host checks.** Check `Origin` and `Host` against an allowlist on every WebSocket upgrade and every state-changing request, inside the code path that handles upgrades. Real failures:
@@ -588,7 +581,7 @@ Each Unix user runs their own instance; nothing is shared between users.
 
 ### 9.4 Remote access, in order of preference
 
-1. **An SSH local forward**, either to the TCP port or straight to the server's Unix socket: `ssh -L 7777:/home/me/.local/state/spectraweaver/server.sock host`. The page is then served from localhost, which browsers treat as a secure context.
+1. **An SSH local forward** to the server's port: `ssh -L 7777:localhost:7777 host` (straight to a Unix socket once the server can listen on one, §9.2). The page is then served from localhost, which browsers treat as a secure context.
 2. **Tailscale Serve.** Valid certificates and tailnet-only access. Hostnames appear in public certificate-transparency logs.
 3. **A reverse proxy** with TLS.
 4. **Built-in TLS** with a user-provided certificate.
@@ -619,7 +612,7 @@ Each Unix user runs their own instance; nothing is shared between users.
     // Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
     ```
   - Anyone who redistributes source derived from these files must keep those notices (Apache-2.0 §4(c)), and derivative distributions must carry the `NOTICE` attributions (§4(d)).
-  - CI fails if a source file lacks the header, for example using `addlicense -check`.
+  - CI fails if a source file lacks the header (`scripts/check-headers.ts`).
   - The binary bundles third-party code: the Bun runtime, xterm.js and other dependencies. Generate a third-party notices file at build time, ship it with every release, and show it on the UI's About page.
 
 ## 11. CLI
@@ -640,8 +633,8 @@ spectraweaver close ID
 spectraweaver board set [FILE|-] | show | clear [--tab NAME]
                                         a tab's task board (§8.7)
 spectraweaver attach <session>            (planned) emergency access from any terminal (detach: Ctrl+] twice)
-spectraweaver hook <agent>                agent hook entry point (JSON on stdin)
-spectraweaver hooks install <agent>
+spectraweaver hook <agent>                (planned) agent hook entry point (JSON on stdin), §8.3
+spectraweaver hooks install <agent>       (planned)
 spectraweaver passwd [--clear]            set or remove the browser sign-in password
 spectraweaver config                      show where config and state live
 spectraweaver config state-dir PATH|--reset  move this host's state, e.g. off a small or NFS home

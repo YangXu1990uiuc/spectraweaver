@@ -104,8 +104,9 @@ export class Engine {
   }
 
   /** Call only when the engine has processed exactly the bytes the snapshot should cover. */
-  serialize(): string {
-    return this.serializer.serialize() + this.restoreSuffix();
+  /** The screen and scrollback as escape sequences; `scrollback` limits how much history. */
+  serialize(scrollback?: number): string {
+    return this.serializer.serialize(scrollback === undefined ? undefined : { scrollback }) + this.restoreSuffix();
   }
 
   dispose(): void {

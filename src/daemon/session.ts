@@ -4,7 +4,7 @@
 
 import type { Subprocess } from "bun";
 import { sessionEnv } from "../common/env.ts";
-import type { DaemonEvent, ScreenText, SessionInfo, Snapshot } from "../common/protocol.ts";
+import { type DaemonEvent, MAX_FRAME_BYTES, type ScreenText, type SessionInfo, type Snapshot } from "../common/protocol.ts";
 import { Engine } from "./engine.ts";
 
 export interface Subscriber {
@@ -30,6 +30,10 @@ const TYPE_AHEAD_QUIET_MS = 300;
 const TYPE_AHEAD_FIRST_MS = 3000;
 const TYPE_AHEAD_MAX_MS = 5000;
 const KILL_GRACE_MS = 3000;
+/** Room for a snapshot in one frame, leaving some for the rest of the message. */
+const SNAPSHOT_MAX_BYTES = MAX_FRAME_BYTES - 64 * 1024;
+/** Titles and notification texts are cut to this many characters. */
+const MAX_TEXT = 1000;
 
 /**
  * One PTY plus its daemon-side terminal engine.
@@ -50,9 +54,13 @@ export class Session {
   private typeAhead: (() => void) | null = null;
   private killTimer: ReturnType<typeof setTimeout> | null = null;
   private lastOutputAt: number | null = null;
+  private disposed = false;
+  /** The size last asked for (resize), which the engine and the program reach in order. */
+  private target: { cols: number; rows: number };
 
   constructor(private readonly options: SessionOptions) {
     this.id = options.id;
+    this.target = { cols: options.cols, rows: options.rows };
     this.state = {
       id: options.id,
       cmd: options.cmd,
@@ -73,13 +81,19 @@ export class Session {
         reply: (data) => this.writeInput(data),
       },
       {
-        onTitle: (title) => {
+        // Programs set these at will (a shell at every prompt), and they reach every browser:
+        // kept short, and sent only when they change.
+        onTitle: (raw) => {
+          const title = raw.slice(0, MAX_TEXT);
+          if (title === this.state.title) return;
           this.state.title = title;
           emit({ type: "title", session: this.id, title });
         },
         onBell: () => emit({ type: "bell", session: this.id }),
-        onNotify: (kind, text) => emit({ type: "notify", session: this.id, kind, text }),
-        onCwd: (cwd) => {
+        onNotify: (kind, text) => emit({ type: "notify", session: this.id, kind, text: text.slice(0, MAX_TEXT) }),
+        onCwd: (raw) => {
+          const cwd = raw.slice(0, 4096);
+          if (cwd === this.state.cwd) return;
           this.state.cwd = cwd;
           emit({ type: "cwd", session: this.id, cwd });
         },
@@ -112,10 +126,15 @@ export class Session {
     this.proc.terminal?.write(data);
   }
 
-  subscribe(subscriber: Subscriber, onSnapshot: (snapshot: Snapshot) => void): void {
+  /**
+   * Adds a subscriber once the engine has parsed everything received so far, with a snapshot of
+   * that point. If `wanted` says no by then (an unsubscribe came first), the snapshot is still
+   * answered but nothing more is sent.
+   */
+  subscribe(subscriber: Subscriber, onSnapshot: (snapshot: Snapshot) => void, wanted: () => boolean = () => true): void {
     this.engine.write("", () => {
       if (subscriber.closed) return;
-      this.subscribers.add(subscriber);
+      if (wanted() && !this.disposed) this.subscribers.add(subscriber);
       onSnapshot(this.snapshotNow());
     });
   }
@@ -131,7 +150,7 @@ export class Session {
         session: this.id,
         cols: this.state.cols,
         rows: this.state.rows,
-        lines: this.engine.text(rows),
+        lines: this.disposed ? [] : this.engine.text(rows),
         altScreen: this.engine.altScreen,
         bracketedPaste: this.engine.bracketedPaste,
         lastOutputAt: this.lastOutputAt,
@@ -152,10 +171,13 @@ export class Session {
    */
   resize(cols: number, rows: number, done: (info: SessionInfo) => void): void {
     if (this.state.exited) throw new Error("the session has exited");
-    if (cols === this.state.cols && rows === this.state.rows) {
-      done(this.info());
+    // Against the size last asked for, not the one applied: a second resize sent before the
+    // first is applied must not be taken for no change. Answered in order either way.
+    if (cols === this.target.cols && rows === this.target.rows) {
+      this.engine.write("", () => done(this.info()));
       return;
     }
+    this.target = { cols, rows };
     this.engine.write("", () => {
       this.engine.resize(cols, rows);
       this.state.cols = cols;
@@ -187,12 +209,13 @@ export class Session {
   /** Ends the session: SIGHUP, then SIGKILL if the program ignores it. */
   terminate(): void {
     this.closing = true;
-    if (this.state.exited) return;
+    if (this.state.exited || this.killTimer) return;
     this.proc.kill("SIGHUP");
     this.killTimer = setTimeout(() => this.proc.kill("SIGKILL"), KILL_GRACE_MS);
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.killTimer) clearTimeout(this.killTimer);
     if (!this.state.exited) this.proc.kill("SIGKILL");
     this.closePty();
@@ -206,13 +229,18 @@ export class Session {
   }
 
   private snapshotNow(): Snapshot {
-    return {
-      session: this.id,
-      offset: this.offset,
-      cols: this.state.cols,
-      rows: this.state.rows,
-      data: this.engine.serialize(),
-    };
+    const snapshot = { session: this.id, offset: this.offset, cols: this.state.cols, rows: this.state.rows, data: "" };
+    // A request queued before the session was removed finds its engine gone: nothing to show.
+    if (this.disposed) return snapshot;
+    snapshot.data = this.engine.serialize();
+    // The snapshot travels in one frame, where JSON writes each control character as six bytes:
+    // a full scrollback of richly coloured text can pass the limit. Less scrollback then.
+    for (const lines of [2000, 200, 0]) {
+      if (snapshot.data.length * 6 < SNAPSHOT_MAX_BYTES) break;
+      if (Buffer.byteLength(JSON.stringify(snapshot.data)) < SNAPSHOT_MAX_BYTES) break;
+      snapshot.data = this.engine.serialize(lines);
+    }
+    return snapshot;
   }
 
   private reportFocusChange(before: boolean): void {

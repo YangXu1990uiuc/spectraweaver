@@ -70,6 +70,7 @@ export async function cmdBoard(args: string[]): Promise<void> {
     console.log(BOARD_HELP);
     return;
   }
+  if (!["set", "show", "clear"].includes(command)) fail(`unknown board command: ${command}\n\n${BOARD_HELP}`);
   const flags = parseFlags(rest, ["tab"]);
   const paths = resolvePaths();
   const tab = await boardTab(paths, flag(flags, "tab"));
@@ -144,7 +145,7 @@ function needServer<T>(result: T | null): T {
 }
 
 /** "11 tasks: 2 done, 5 wip, 1 blocked, 3 todo". */
-export function summary(board: Board): string {
+function summary(board: Board): string {
   const order: TaskStatus[] = ["done", "wip", "blocked", "todo"];
   const counts = order.map((status) => [status, board.tasks.filter((task) => task.status === status).length] as const);
   const parts = counts.filter(([, count]) => count > 0).map(([status, count]) => `${count} ${status}`);

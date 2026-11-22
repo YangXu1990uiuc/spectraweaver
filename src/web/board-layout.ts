@@ -63,6 +63,12 @@ const WAYPOINT_GAP = 10;
 const HEAD = 8;
 const ORDER_SWEEPS = 8;
 const PLACE_SWEEPS = 8;
+/**
+ * Past this many cards and waypoints (a deep board whose arrows skip many layers), the layout
+ * sweeps twice and stops counting crossings, which grows with the square of a layer: a worse
+ * drawing beats a page that hangs for seconds.
+ */
+const LARGE_GRAPH = 4000;
 
 interface Node {
   /** The task, or null for a waypoint. */
@@ -74,10 +80,8 @@ interface Node {
   pos: number;
 }
 
-/** Lays the board out in both directions and keeps the one that fits `area` with the least shrinking. */
-export function chooseLayout(tasks: readonly LayoutTask[], card: Size, area: Size): BoardLayout {
-  const down = layoutBoard(tasks, card, "down");
-  const right = layoutBoard(tasks, card, "right");
+/** Of a board laid out both ways, the one that fits `area` with less shrinking (top to bottom on a tie). */
+export function pickLayout(down: BoardLayout, right: BoardLayout, area: Size): BoardLayout {
   return fitScale(right, area) > fitScale(down, area) + 0.01 ? right : down;
 }
 
@@ -263,7 +267,8 @@ function order(byLayer: Node[][]): void {
   const index = () => byLayer.forEach((layer) => layer.forEach((node, i) => (node.pos = i)));
   index();
   let best = byLayer.map((layer) => [...layer]);
-  let fewest = crossings(byLayer);
+  const large = byLayer.reduce((sum, layer) => sum + layer.length, 0) > LARGE_GRAPH;
+  let fewest = large ? Number.POSITIVE_INFINITY : crossings(byLayer);
   const sortBy = (layer: Node[], neighbours: (node: Node) => Node[]) => {
     const keyed = layer.map((node) => {
       const around = neighbours(node);
@@ -276,9 +281,13 @@ function order(byLayer: Node[][]): void {
       entry.node.pos = i;
     });
   };
-  for (let sweep = 0; sweep < ORDER_SWEEPS && fewest > 0; sweep++) {
+  for (let sweep = 0; sweep < (large ? 2 : ORDER_SWEEPS) && fewest > 0; sweep++) {
     if (sweep % 2 === 0) for (let level = 1; level < byLayer.length; level++) sortBy(byLayer[level]!, (node) => node.up);
     else for (let level = byLayer.length - 2; level >= 0; level--) sortBy(byLayer[level]!, (node) => node.down);
+    if (large) {
+      best = byLayer.map((layer) => [...layer]); // the last sweep's order
+      continue;
+    }
     const count = crossings(byLayer);
     if (count < fewest) {
       fewest = count;
@@ -337,7 +346,8 @@ function place(byLayer: Node[][], cardCross: number, gap: number): void {
     );
     layer.forEach((node, i) => (node.pos = placed[i]!));
   };
-  for (let sweep = 0; sweep < PLACE_SWEEPS; sweep++) {
+  const sweeps = byLayer.reduce((sum, layer) => sum + layer.length, 0) > LARGE_GRAPH ? 2 : PLACE_SWEEPS;
+  for (let sweep = 0; sweep < sweeps; sweep++) {
     if (sweep % 2 === 0) for (let level = 1; level < byLayer.length; level++) settle(byLayer[level]!, (node) => node.up);
     else for (let level = byLayer.length - 2; level >= 0; level--) settle(byLayer[level]!, (node) => node.down);
   }

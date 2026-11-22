@@ -44,3 +44,15 @@ test("rejects absurd frame lengths", () => {
   const decoder = new FrameDecoder(() => {});
   expect(() => decoder.push(new Uint8Array([0xff, 0xff, 0xff, 0xff, 1]))).toThrow();
 });
+
+test("a large frame arriving in many small chunks is joined once", () => {
+  const big = new Uint8Array(5 * 1024 * 1024).map((_, i) => i % 251);
+  const frame = encodeOutputFrame("s1", 0, big);
+  const seen: Uint8Array[] = [];
+  const decoder = new FrameDecoder((_kind, payload) => seen.push(payload));
+  const started = performance.now();
+  for (let i = 0; i < frame.length; i += 4096) decoder.push(frame.subarray(i, i + 4096));
+  expect(performance.now() - started).toBeLessThan(1000);
+  expect(seen).toHaveLength(1);
+  expect(decodeOutputPayload(seen[0]!).data).toEqual(big);
+});

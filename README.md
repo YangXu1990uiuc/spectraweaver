@@ -139,7 +139,7 @@ SpectraWeaver uses no file locks and no SQLite, the usual sources of NFS trouble
 | `spectraweaver autostart [on \| off]` | Start SpectraWeaver when this host boots (a crontab `@reboot` line), or stop doing so. |
 | `spectraweaver passwd [--clear]` | Set (or remove) the password for signing in from the browser. |
 | `spectraweaver token [--rotate]` | Print the login token and link; `--rotate` replaces the token and signs out every browser. |
-| `spectraweaver config [state-dir PATH \| --reset]` | Show where config and state live, or move this host's state. |
+| `spectraweaver config` / `config state-dir PATH \| --reset` | Show where config and state live, or move this host's state. |
 | `spectraweaver ls [--json] [--tab NAME]` | List terminals: tab, banner, and what each one's coding agent is doing (working, idle, waiting for an answer, or stopped and why). |
 | `spectraweaver new [--tab NAME] [--banner TEXT] [--size 120x36] [--cwd DIR] [--show] [-- COMMAND]` | Create a terminal and print its id; `COMMAND` is typed into its shell. It lands in the tab of the terminal the command runs in, else the first tab; a tab name no tab has yet makes a new tab. In a tab with a board it starts in the taskbar, unless `--show`. |
 | `spectraweaver read ID [--lines N]` | Print a terminal's screen as text; `--lines N` prints its last N lines, scrollback included. |

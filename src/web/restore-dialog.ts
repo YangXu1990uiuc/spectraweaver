@@ -6,7 +6,7 @@
 // to open again where they were, and the agents' recent conversations, to resume in new terminals.
 
 import type { ClientMessage, Conversation, LostSession } from "../common/protocol.ts";
-import { el } from "./dom.ts";
+import { ago, el } from "./dom.ts";
 
 export interface RestoreContext {
   send(message: ClientMessage): void;
@@ -75,7 +75,7 @@ export function createRestoreDialog(context: RestoreContext): {
       ...lost.map((session) => {
         const name = session.banner || session.agent?.conversation || shortPath(session.cwd);
         const details = [shortPath(session.cwd), context.tabName(session.tab), session.agent?.command ?? "shell"];
-        return pickItem(lostPicked, session.id, renderLost, [
+        return pickItem(lostPicked, session.id, countLost, [
           el("span", { class: "swatch", style: `background:${session.color}` }),
           el("span", { class: "pick-text" }, [
             el("span", { class: "pick-name" }, [name]),
@@ -84,16 +84,21 @@ export function createRestoreDialog(context: RestoreContext): {
         ]);
       }),
     );
+    countLost();
+  };
+
+  /** A box ticked or cleared changes the buttons, not the list (which would lose the focus). */
+  function countLost(): void {
     const count = lost.filter((session) => lostPicked.has(session.id)).length;
     restoreButton.textContent = `Restore ${count}`;
     restoreButton.disabled = count === 0;
     forgetButton.disabled = count === 0;
-  };
+  }
 
   const renderConversations = () => {
     conversationList.replaceChildren(
       ...conversations.map((found) =>
-        pickItem(conversationsPicked, found.id, renderConversations, [
+        pickItem(conversationsPicked, found.id, countConversations, [
           el("span", { class: `agent-tag ${found.agent}` }, [found.agent]),
           el("span", { class: "pick-text" }, [
             el("span", { class: "pick-name" }, [found.label || shortPath(found.cwd)]),
@@ -102,10 +107,14 @@ export function createRestoreDialog(context: RestoreContext): {
         ]),
       ),
     );
+    countConversations();
+  };
+
+  function countConversations(): void {
     const count = conversations.filter((found) => conversationsPicked.has(found.id)).length;
     openButton.textContent = `Open ${count}`;
     openButton.disabled = count === 0;
-  };
+  }
 
   restoreButton.addEventListener("click", () => {
     context.send({ t: "restore", ids: lost.filter((session) => lostPicked.has(session.id)).map((session) => session.id) });
@@ -169,17 +178,8 @@ function pickItem(picked: Set<string>, id: string, changed: () => void, children
 }
 
 /** A directory with the home directory shortened to ~. */
-export function shortPath(path: string): string {
+function shortPath(path: string): string {
   return path.replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, "~");
 }
 
-/** "just now", "5 min ago", "3 h ago", "yesterday", or the date. */
-export function ago(at: number, now = Date.now()): string {
-  const minutes = Math.round((now - at) / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
-  if (hours < 48) return "yesterday";
-  return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
+

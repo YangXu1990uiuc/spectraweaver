@@ -31,17 +31,6 @@ export function shortAge(ms: number): string {
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
 
-/** "just now", "3 min ago", "2 h ago", "4 days ago". */
-export function agoText(ms: number): string {
-  const minutes = Math.floor(ms / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days} day${days === 1 ? "" : "s"} ago`;
-}
-
 /**
  * The live state of a task's terminal; null when the task names none. A missing or exited
  * terminal, or a shell with nothing running in it, is an alarm only while the task is in
@@ -71,8 +60,11 @@ export function taskLive(task: BoardTask, session: SessionView | undefined, now:
   return { terminal, text: session.atPrompt === false ? "running" : "", kind: "idle", alarm: null };
 }
 
-/** An agent's state as its window's badge shows it, with how long it has been idle. */
-export function agentLive(terminal: string, agent: AgentStatus, now: number): TaskLive {
+/**
+ * An agent's state in a few words, as every badge shows it (windows, taskbar, board), with how
+ * long it has been idle unless `age` is false.
+ */
+export function agentLive(terminal: string, agent: AgentStatus, now: number, age = true): TaskLive {
   const detail = agent.detail;
   if (agent.activity === "stopped" || agent.warning) {
     const why = agent.activity === "stopped" ? (agent.reason ?? "stopped") : agent.warning;
@@ -83,8 +75,8 @@ export function agentLive(terminal: string, agent: AgentStatus, now: number): Ta
   }
   if (agent.activity === "working") return { terminal, text: "working", kind: "working", alarm: null, detail };
   if (agent.activity === "idle") {
-    const age = agent.since !== undefined && now - agent.since >= 60_000 ? ` ${shortAge(now - agent.since)}` : "";
-    return { terminal, text: `idle${age}`, kind: "idle", alarm: null, detail };
+    const idle = age && agent.since !== undefined && now - agent.since >= 60_000 ? ` ${shortAge(now - agent.since)}` : "";
+    return { terminal, text: `idle${idle}`, kind: "idle", alarm: null, detail };
   }
   return { terminal, text: agent.name, kind: "idle", alarm: null, detail };
 }

@@ -10,7 +10,7 @@ import { writeFileAtomic } from "../common/files.ts";
 import { isLoopbackAddress } from "../common/net.ts";
 import { ensurePrivateDir } from "../common/paths.ts";
 
-export const MIN_PASSWORD_LENGTH = 8;
+const MIN_PASSWORD_LENGTH = 8;
 const MAX_PASSWORD_LENGTH = 1024;
 
 export function cookieName(instanceId: string): string {

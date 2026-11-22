@@ -36,7 +36,7 @@ const CASCADE_STEP = 0.03;
  * With snapping on, windows snap to grid lines at 36ths of the workspace: fine enough to place
  * windows freely, and halves, thirds and quarters all fall on them.
  */
-export const SNAP_DIVISIONS = 36;
+const SNAP_DIVISIONS = 36;
 
 /** The grid line nearest to a position along an axis of the given extent. */
 function snapLine(value: number, extent: number): number {

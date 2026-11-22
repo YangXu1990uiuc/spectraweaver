@@ -43,8 +43,9 @@ export function cellAt(font: FontMetrics, textPx: number): Area {
 export function recommendSize(tile: Area, font: FontMetrics, textPx: number): { cols: number; rows: number } {
   const cell = cellAt(font, textPx);
   return {
-    cols: clamp(Math.floor(tile.width / cell.width), 20, 1000),
-    rows: clamp(Math.floor(tile.height / cell.height), 5, 500),
+    // At least 20 x 5 even for a tiny tile: smaller is rarely what anyone wants to start with.
+    cols: clamp(Math.floor(tile.width / cell.width), 20, SIZE_LIMITS.maxCols),
+    rows: clamp(Math.floor(tile.height / cell.height), 5, SIZE_LIMITS.maxRows),
   };
 }
 

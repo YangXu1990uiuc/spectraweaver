@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Part of SpectraWeaver: https://github.com/YangXu1990uiuc/spectraweaver
 
+import { SIZE_LIMITS } from "../common/protocol.ts";
 import { el, formatGrid, type Grid, loadSetting, saveSetting } from "./dom.ts";
 import {
   type Area,
@@ -21,11 +22,8 @@ export interface NewTerminalContext {
   create(request: { cols: number; rows: number; cwd?: string; cmd?: string }): void;
 }
 
-const MAX_COLS = 1000;
-const MAX_ROWS = 500;
-
 /** The text size the user prefers, learned from the sizes they create. */
-export function preferredTextPx(): number {
+function preferredTextPx(): number {
   const value = Number(loadSetting("textPx", String(DEFAULT_TEXT_PX)));
   return Number.isFinite(value) ? Math.min(MAX_TEXT_PX, Math.max(MIN_TEXT_PX, value)) : DEFAULT_TEXT_PX;
 }
@@ -43,8 +41,22 @@ export function createNewTerminalDialog(context: NewTerminalContext): {
   element: HTMLDialogElement;
   open(): void;
 } {
-  const cols = el("input", { type: "number", min: "20", max: String(MAX_COLS), step: "1", class: "size-input", "aria-label": "columns" });
-  const rows = el("input", { type: "number", min: "5", max: String(MAX_ROWS), step: "1", class: "size-input", "aria-label": "rows" });
+  const cols = el("input", {
+    type: "number",
+    min: String(SIZE_LIMITS.minCols),
+    max: String(SIZE_LIMITS.maxCols),
+    step: "1",
+    class: "size-input",
+    "aria-label": "columns",
+  });
+  const rows = el("input", {
+    type: "number",
+    min: String(SIZE_LIMITS.minRows),
+    max: String(SIZE_LIMITS.maxRows),
+    step: "1",
+    class: "size-input",
+    "aria-label": "rows",
+  });
   // A text size describes the same choice as columns x rows in one tile; editing either sets the other.
   const text = el("input", { type: "number", min: "4", max: "72", step: "0.25", class: "size-input", "aria-label": "text size in pixels" });
   const recommend = el("button", { type: "button", class: "link-btn" });
@@ -77,7 +89,8 @@ export function createNewTerminalDialog(context: NewTerminalContext): {
   const size = (): [number, number] | null => {
     const c = Number(cols.value);
     const r = Number(rows.value);
-    return Number.isInteger(c) && Number.isInteger(r) && c >= 2 && r >= 1 && c <= MAX_COLS && r <= MAX_ROWS
+    const { minCols, maxCols, minRows, maxRows } = SIZE_LIMITS;
+    return Number.isInteger(c) && Number.isInteger(r) && c >= minCols && r >= minRows && c <= maxCols && r <= maxRows
       ? [c, r]
       : null;
   };
@@ -123,7 +136,7 @@ export function createNewTerminalDialog(context: NewTerminalContext): {
     const chosen = size();
     if (!chosen) {
       event.preventDefault();
-      error.textContent = `Columns must be 2–${MAX_COLS} and rows 1–${MAX_ROWS}.`;
+      error.textContent = `Columns must be ${SIZE_LIMITS.minCols}–${SIZE_LIMITS.maxCols} and rows ${SIZE_LIMITS.minRows}–${SIZE_LIMITS.maxRows}.`;
       return;
     }
     // Remember the text size this choice implies, so the next recommendation matches it

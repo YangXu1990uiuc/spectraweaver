@@ -82,8 +82,6 @@ interface Geometry {
   rows: number;
   /** One cell. */
   cell: Area;
-  /** The screen: cols x cell.width by rows x cell.height. */
-  screen: Area;
   /** The tile's terminal area: the most the terminal can grow to at this text size. */
   area: Area;
 }
@@ -406,7 +404,7 @@ export class TermView {
     return fitTextPx({ width, height }, this.term.cols, this.term.rows, trueFont());
   }
 
-  /** The terminal as drawn now: grid, cell and screen size, and the tile area it may fill. */
+  /** The terminal as drawn now: grid and cell size, and the tile area it may fill. */
   private geometry(): Geometry | null {
     const screen = this.term.element?.querySelector<HTMLElement>(".xterm-screen");
     const width = screen?.offsetWidth ?? 0;
@@ -416,7 +414,6 @@ export class TermView {
       cols: this.term.cols,
       rows: this.term.rows,
       cell: { width: width / this.term.cols, height: height / this.term.rows },
-      screen: { width, height },
       area: { width: this.element.clientWidth, height: this.element.clientHeight },
     };
   }
@@ -490,7 +487,7 @@ function trueFont(): FontMetrics {
   return trueFontCache;
 }
 
-export function sanitizePaste(text: string): string {
+function sanitizePaste(text: string): string {
   return text.replace(/[\x1b\x9b]/g, "");
 }
 

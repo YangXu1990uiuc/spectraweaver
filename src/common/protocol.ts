@@ -346,7 +346,7 @@ export function encodeJsonFrame(message: unknown): Uint8Array {
   return withHeader(KIND_JSON, encoder.encode(JSON.stringify(message)));
 }
 
-export function encodeOutputPayload(sessionId: string, offset: number, data: Uint8Array): Uint8Array {
+function encodeOutputPayload(sessionId: string, offset: number, data: Uint8Array): Uint8Array {
   const id = encoder.encode(sessionId);
   if (id.length > 255) throw new Error("session id too long");
   const payload = new Uint8Array(1 + id.length + 8 + data.length);
@@ -382,18 +382,33 @@ export function decodeJson<T>(payload: Uint8Array): T {
   return JSON.parse(decoder.decode(payload)) as T;
 }
 
-/** Splits a byte stream into frames. Payloads handed to the callback are fresh copies. */
+/**
+ * Splits a byte stream into frames. Payloads handed to the callback are fresh copies. The bytes
+ * of a frame that has not all arrived are kept as chunks and joined once it has, so a large
+ * frame arriving in many chunks costs its size, not its size times the number of chunks.
+ */
 export class FrameDecoder {
-  private pending: Uint8Array = new Uint8Array(0);
+  private pending: Uint8Array[] = [];
+  private pendingBytes = 0;
+  /** How many bytes must be pending before a frame can be complete. */
+  private needed = 0;
 
   constructor(private readonly onFrame: (kind: number, payload: Uint8Array) => void) {}
 
   push(chunk: Uint8Array): void {
     let buffer = chunk;
     if (this.pending.length > 0) {
-      buffer = new Uint8Array(this.pending.length + chunk.length);
-      buffer.set(this.pending, 0);
-      buffer.set(chunk, this.pending.length);
+      this.pending.push(chunk.slice());
+      this.pendingBytes += chunk.length;
+      if (this.pendingBytes < this.needed) return;
+      buffer = new Uint8Array(this.pendingBytes);
+      let at = 0;
+      for (const part of this.pending) {
+        buffer.set(part, at);
+        at += part.length;
+      }
+      this.pending = [];
+      this.pendingBytes = 0;
     }
     const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
     let offset = 0;
@@ -406,6 +421,10 @@ export class FrameDecoder {
       offset += 4 + length;
       this.onFrame(kind, payload);
     }
-    this.pending = offset === buffer.length ? new Uint8Array(0) : buffer.slice(offset);
+    if (offset === buffer.length) return;
+    const rest = buffer.slice(offset);
+    this.pending = [rest];
+    this.pendingBytes = rest.length;
+    this.needed = rest.length >= 4 ? 4 + new DataView(rest.buffer).getUint32(0) : 4;
   }
 }

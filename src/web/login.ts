@@ -18,7 +18,7 @@ async function post(path: string, body: unknown): Promise<Response> {
   });
 }
 
-export async function isLoggedIn(): Promise<boolean> {
+async function isLoggedIn(): Promise<boolean> {
   try {
     return (await fetch("/api/me")).ok;
   } catch {

@@ -52,7 +52,10 @@ export class MetaStore {
   private data: MetaFile = { version: 2, tabs: [{ ...DEFAULT_TAB }], sessions: {} };
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly file: string) {
+  constructor(
+    private readonly file: string,
+    private readonly onSaveError: (error: Error) => void = () => {},
+  ) {
     if (!existsSync(file)) return;
     try {
       const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<MetaFile>;
@@ -324,6 +327,15 @@ export class MetaStore {
     writeFileAtomic(this.file, JSON.stringify(this.data, null, 2));
   }
 
+  /** A save on a timer: a full disk or quota loses this save (and is logged), not the server. */
+  private flushQuietly(): void {
+    try {
+      this.flush();
+    } catch (error) {
+      this.onSaveError(error as Error);
+    }
+  }
+
   /**
    * A session arriving in another tab has no window there yet, and shows; one already in the tab
    * keeps its frame.
@@ -363,7 +375,7 @@ export class MetaStore {
 
   private scheduleSave(): void {
     if (this.saveTimer) return;
-    this.saveTimer = setTimeout(() => this.flush(), 100);
+    this.saveTimer = setTimeout(() => this.flushQuietly(), 100);
   }
 }
 
@@ -380,6 +392,7 @@ function withSaneBoard(tab: TabView): TabView {
   return sane;
 }
 
-function cleanName(name: string): string {
+/** A tab name as stored: on one line, at most 60 characters. */
+export function cleanName(name: string): string {
   return String(name).replace(/\s+/g, " ").trim().slice(0, 60);
 }

@@ -96,6 +96,10 @@ class Tab {
     this.ws.send(JSON.stringify(message));
   }
 
+  sendRaw(text: string): void {
+    this.ws.send(text);
+  }
+
   output(sessionId: string): string {
     return this.outputs.get(sessionId) ?? "";
   }
@@ -229,8 +233,7 @@ test("sessions survive a server restart", async () => {
 test("windows: a frame placed from one tab reaches every tab, a bad one is ignored, a move to another tab drops it", async () => {
   const a = await Tab.open();
   const b = await Tab.open();
-  const { tabs } = await a.next<{ t: "tabs"; tabs: TabView[] }>((m) => m.t === "tabs");
-  const main = tabs[0]!.id;
+  await a.next<{ t: "tabs"; tabs: TabView[] }>((m) => m.t === "tabs");
   a.send({ t: "create", cols: 80, rows: 24 });
   const { session } = await a.next<{ t: "session"; session: SessionView }>((m) => m.t === "session");
   expect(session.frame).toBeUndefined();
@@ -259,10 +262,24 @@ test("windows: a frame placed from one tab reaches every tab, a bad one is ignor
   b.close();
 });
 
+test("a browser's malformed messages are ignored, not fatal", async () => {
+  const tab = await Tab.open();
+  for (const text of ["null", "5", '"x"', "[]", '{"t":"banner"}', '{"t":"session-frame","session":{},"frame":null}', "{not json"]) {
+    tab.sendRaw(text);
+  }
+  tab.send({ t: "tab-create", id: "cafecafe", name: "still here", color: "#2ea043", grid: "2x2" });
+  await tab.next((message) => message.t === "tabs" && message.tabs.some((candidate) => candidate.name === "still here"));
+  tab.send({ t: "tab-delete", id: "cafecafe" });
+  tab.close();
+});
+
 test("health names the owner's uid so `up` can tell instances apart", async () => {
-  const health = (await (await fetch(`${base}/api/health`)).json()) as { ok: boolean; uid: number };
+  const health = (await (await fetch(`${base}/api/health`)).json()) as { ok: boolean; uid: number; pid: number };
   expect(health.ok).toBe(true);
   expect(health.uid).toBe(process.getuid!());
+  expect(health.pid).toBe(process.pid);
+  // A page on another name (DNS rebinding) cannot read who runs it.
+  expect((await fetch(`${base}/api/login-info`, { headers: { host: "evil.example:80" } })).status).toBe(403);
   const info = (await (await fetch(`${base}/api/login-info`)).json()) as { user: string; passwordSet: boolean };
   expect(info.user).toBe(userInfo().username);
   expect(info.passwordSet).toBe(false);
@@ -326,10 +343,12 @@ test("password: set it, sign in with it, sign out; other logins end", async () =
   expect(logout.headers.get("set-cookie")).toContain("Max-Age=0");
 });
 
-test("password guessing locks out after five failures; the token still works", async () => {
-  for (let i = 0; i < 5; i++) {
-    expect((await post("/api/login", { password: `guess-${i}-xxxxx` })).status).toBe(401);
-  }
+test("password guessing locks out after five failures, even guesses sent at once; the token still works", async () => {
+  // All at once: only five get checked before the lock.
+  const guesses = await Promise.all(Array.from({ length: 20 }, (_, i) => post("/api/login", { password: `guess-${i}-xxxxx` })));
+  const statuses = guesses.map((response) => response.status);
+  expect(statuses.filter((status) => status === 401)).toHaveLength(5);
+  expect(statuses.filter((status) => status === 429)).toHaveLength(15);
   const locked = await post("/api/login", { password: "correct horse" });
   expect(locked.status).toBe(429);
   expect(Number(locked.headers.get("retry-after"))).toBeGreaterThan(0);

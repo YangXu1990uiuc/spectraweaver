@@ -7,13 +7,14 @@ import type { AgentStatus, BoardTask, SessionView } from "../src/common/protocol
 import { BoardError, parseBoard } from "../src/server/board.ts";
 import {
   type BoardLayout,
-  chooseLayout,
   closestInOrder,
   type Direction,
   type LayoutTask,
   layoutBoard,
+  pickLayout,
 } from "../src/web/board-layout.ts";
-import { agoText, shortAge, taskLive } from "../src/web/board-live.ts";
+import { shortAge, taskLive } from "../src/web/board-live.ts";
+import { ago } from "../src/web/dom.ts";
 
 const NOW = 1_800_000_000_000;
 
@@ -195,8 +196,10 @@ describe("the board's layout", () => {
 
   test("lays a wide, shallow board out left to right when that fits better", () => {
     const wide: LayoutTask[] = Array.from({ length: 12 }, (_, i) => ({ id: `W${i}` }));
-    expect(chooseLayout(wide, CARD, { width: 1100, height: 800 }).direction).toBe("right");
-    expect(chooseLayout(SAMPLE, CARD, { width: 1100, height: 800 }).direction).toBe("down");
+    const pick = (tasks: LayoutTask[]) =>
+      pickLayout(layoutBoard(tasks, CARD, "down"), layoutBoard(tasks, CARD, "right"), { width: 1100, height: 800 }).direction;
+    expect(pick(wide)).toBe("right");
+    expect(pick(SAMPLE)).toBe("down");
   });
 
   test("places in order with the room between neighbours, as near as it can to where they want to be", () => {
@@ -249,11 +252,11 @@ describe("a task's terminal, live", () => {
 
   test("ages read briefly", () => {
     expect([shortAge(59_000), shortAge(5 * 60_000), shortAge(3 * 3600_000), shortAge(50 * 3600_000)]).toEqual(["now", "5m", "3h", "2d"]);
-    expect([agoText(10_000), agoText(3 * 60_000), agoText(2 * 3600_000), agoText(26 * 3600_000)]).toEqual([
+    expect([ago(NOW - 10_000, NOW), ago(NOW - 3 * 60_000, NOW), ago(NOW - 2 * 3600_000, NOW), ago(NOW - 26 * 3600_000, NOW)]).toEqual([
       "just now",
       "3 min ago",
       "2 h ago",
-      "1 day ago",
+      "yesterday",
     ]);
   });
 });

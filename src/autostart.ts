@@ -8,6 +8,7 @@
 
 import { spawnSync } from "node:child_process";
 import { basename } from "node:path";
+import { shellQuote as quote } from "./server/agents.ts";
 
 /** Ends SpectraWeaver's line, so it can be found again; the shell cron runs it with ignores it. */
 export const AUTOSTART_MARKER = "# spectraweaver autostart";
@@ -71,6 +72,4 @@ function loginShell(shell: string): string {
   return ["bash", "zsh", "ksh", "mksh", "dash", "sh", "fish"].includes(basename(shell)) ? shell : "/bin/sh";
 }
 
-function quote(word: string): string {
-  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`;
-}
+

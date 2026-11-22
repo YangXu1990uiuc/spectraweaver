@@ -80,9 +80,9 @@ export class TabStrip {
   }
 
   /**
-   * Updates the tabs in place. Agents change their terminal titles many times a second, and
-   * each change re-renders; replacing the elements would swallow clicks and drops on them,
-   * because the element under the pointer would be gone before the button is released.
+   * Updates the tabs in place. It runs whenever a terminal's state changes (an agent starts,
+   * stops, waits; a bell), which can be often; replacing the elements would swallow clicks and
+   * drops on them, because the element under the pointer would be gone before the button is released.
    */
   render(state: TabStripState): void {
     const activeChanged = state.activeId !== this.state.activeId;

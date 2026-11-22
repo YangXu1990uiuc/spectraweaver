@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { statSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { loadInstance } from "../common/config.ts";
-import { ensurePrivateDir, type Paths } from "../common/paths.ts";
+import { ensurePrivateDir, type Paths, requireSocket } from "../common/paths.ts";
 import {
   type AgentStatus,
   type Board,
@@ -42,7 +42,7 @@ import { type AgentDirs, agentDirs, Conversations } from "./conversations.ts";
 import { type Control, type CreateRequest, controlRoutes } from "./control-api.ts";
 import { DaemonClient } from "./daemon-client.ts";
 import { foregroundProcess, processCwd } from "./foreground.ts";
-import { MetaStore } from "./meta.ts";
+import { cleanName, MetaStore } from "./meta.ts";
 import { observe, type RevivalDeps } from "./revival.ts";
 import { AgentStatusReader } from "./status.ts";
 
@@ -58,6 +58,8 @@ export interface ServerOptions {
   revivalEveryMs?: number;
   /** How often to look at what each terminal's coding agent is doing. */
   statusEveryMs?: number;
+  /** How long a program must print nothing to be taken as no longer working (tests shorten it). */
+  statusQuietMs?: number;
   /** Where Claude Code and Codex keep their conversations; from the environment by default. */
   agentDirs?: AgentDirs;
 }
@@ -114,13 +116,14 @@ function ownerName(): string {
 
 export async function startServer(options: ServerOptions): Promise<ServerHandle> {
   const log = options.log ?? ((message: string) => console.error(`[server] ${message}`));
+  requireSocket(options.paths);
   ensurePrivateDir(options.paths.stateDir);
   const instance = loadInstance(options.paths);
   const credentials = new Credentials(options.paths.tokenFile, options.paths.passwordFile);
   const cookie = cookieName(instance.instanceId);
   const throttle = new LoginThrottle();
   const guard = new RequestGuard([...(options.allowHosts ?? []), ...boundHostAllowlist(options.host)]);
-  const meta = new MetaStore(options.paths.metaFile);
+  const meta = new MetaStore(options.paths.metaFile, (error) => log(`saving ${options.paths.metaFile} failed: ${error.message}`));
   const sessions = new Map<string, SessionInfo>();
   const clients = new Set<Client>();
   const fans = new Map<string, Fan>();
@@ -146,11 +149,12 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
   const dirs = options.agentDirs ?? agentDirs();
   const conversations = new Conversations(dirs);
   const revivalDeps: RevivalDeps = { foreground: foregroundProcess, processCwd, conversations, dirs };
-  const statusReader = new AgentStatusReader(conversations, dirs);
+  const statusReader = new AgentStatusReader(conversations, dirs, options.statusQuietMs);
 
+  // Bun closes a socket whose backlog passes MAX_CLIENT_BACKLOG (closeOnBackpressureLimit); a send
+  // it drops all the same (0) closes it too, so a browser never goes on with a gap in what it was sent.
   const send = (client: Client, data: string | Uint8Array) => {
-    client.send(data);
-    if (client.getBufferedAmount() > MAX_CLIENT_BACKLOG) client.close(1013, "client too slow");
+    if (client.send(data) === 0) client.close(1013, "client too slow");
   };
   const sendJson = (client: Client, message: ServerMessage) => send(client, JSON.stringify(message));
   const broadcast = (message: ServerMessage) => {
@@ -170,12 +174,19 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       onConnected: (hello) => {
         daemonFeatures = new Set(hello.features ?? []);
         log(`connected to daemon ${hello.version} (pid ${hello.pid})`);
-        daemon
-          .call<SessionInfo[]>({ op: "list" })
-          .then((list) => {
+        // In frame order (a request's callback), so an event that follows the list in the same
+        // read is applied after it rather than undone by it.
+        daemon.request({ op: "list" }, (response) => {
+          if (!response.ok) {
+            log(`listing sessions failed: ${response.error}`);
+            return;
+          }
+          const list = response.result as SessionInfo[];
+          {
             sessions.clear();
             statuses.clear();
             prompts.clear();
+            agentMissing.clear();
             for (const session of list) sessions.set(session.id, session);
             // Daemons older than the instance id are told apart by pid.
             meta.reconcile(new Set(sessions.keys()), hello.instance ?? `pid ${hello.pid}`);
@@ -196,8 +207,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
                 else client.data.subs.delete(id);
               }
             }
-          })
-          .catch((error: Error) => log(`listing sessions failed: ${error.message}`));
+          }
+        });
       },
       onDisconnected: () => {
         log("daemon disconnected");
@@ -222,7 +233,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         // lost terminal they replace.
         if (event.tag?.startsWith(RESTORE_TAG)) adoptLost(event.session.id, event.tag.slice(RESTORE_TAG.length));
         else if (event.tag) meta.setSessionTab(event.session.id, event.tag, sessions.keys());
-        broadcast({ t: "session", session: view(event.session) });
+        broadcastSession(event.session.id);
         return;
       case "exited": {
         const session = sessions.get(event.session);
@@ -239,6 +250,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         fans.delete(event.session);
         statuses.delete(event.session);
         prompts.delete(event.session);
+        agentMissing.delete(event.session);
         meta.forget(event.session);
         for (const client of clients) client.data.subs.delete(event.session);
         broadcast({ t: "removed", session: event.session });
@@ -533,17 +545,18 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
           sendJson(client, { t: "error", message: `Restoring a terminal failed: ${response.error}` });
         } else if (meta.isLost(lostId)) {
           // Daemons older than the tag don't echo it.
-          adoptLost((response.result as SessionInfo).id, lostId);
+          const id = (response.result as SessionInfo).id;
+          adoptLost(id, lostId);
+          broadcastSession(id);
         }
         broadcastLost();
       },
     );
   }
 
+  /** Gives a new terminal a lost one's place; the caller sends the terminal to browsers. */
   function adoptLost(sessionId: string, lostId: string): void {
-    if (!meta.isLost(lostId)) return;
-    meta.adopt(sessionId, lostId);
-    broadcastSession(sessionId);
+    if (meta.isLost(lostId)) meta.adopt(sessionId, lostId);
   }
 
   /** Conversations from the last two weeks that no terminal, live or lost, is on. */
@@ -568,6 +581,9 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       }));
   }
 
+  /** Terminals whose agent was missing at the last note (see noteRevivals). */
+  const agentMissing = new Set<string>();
+
   /** Notes, for every running terminal, what would bring it back after a restart. */
   function noteRevivals(): void {
     if (!daemon.connected) return;
@@ -584,6 +600,14 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       if (own) claimed.delete(own);
       try {
         const revival = observe(session, previous, claimed, revivalDeps);
+        // An agent dies a moment before its shell when the machine or the daemon goes down; a
+        // note taken then must not forget it. Only a second note in a row without it drops it.
+        if (previous?.agent && !revival.agent && !agentMissing.has(session.id)) {
+          agentMissing.add(session.id);
+          if (own) claimed.add(own);
+          continue;
+        }
+        agentMissing.delete(session.id);
         meta.setRevival(session.id, revival);
         if (revival.agent) {
           if (revival.agent.conversation) claimed.add(revival.agent.conversation);
@@ -626,7 +650,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
               : null;
             status = statusReader.status(agent, running.pid, conversation, screen);
           }
-          if (!sessions.has(session.id)) return;
+          // It may have gone, or exited (which clears its status), while the screen was read.
+          if (!sessions.has(session.id) || sessions.get(session.id)!.exited) return;
           const previous = statuses.get(session.id);
           // How long it has been working, idle or stopped: from the first look that saw it so.
           if (status) status.since = previous?.activity === status.activity ? previous.since : Date.now();
@@ -654,14 +679,15 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
 
   /** A tab by id or by name, whatever its case. */
   function findTab(nameOrId: string): TabView | undefined {
-    const name = nameOrId.replace(/\s+/g, " ").trim();
+    // Cleaned as a stored name is, so a long name finds the tab it made.
+    const name = cleanName(nameOrId);
     const tabs = meta.tabs();
     return tabs.find((tab) => tab.id === name) ?? tabs.find((tab) => tab.name.toLowerCase() === name.toLowerCase());
   }
 
   /** A tab by id or name; a name no tab has makes a new tab. */
   function tabFor(nameOrId: string): string {
-    const name = nameOrId.replace(/\s+/g, " ").trim();
+    const name = cleanName(nameOrId);
     const tabs = meta.tabs();
     const found = findTab(name);
     if (found) return found.id;
@@ -807,9 +833,15 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     routes: {
       "/": indexPage,
       // `uid` lets `spectraweaver up` tell its own server from another user's on the same port.
-      "/api/health": () => Response.json({ ok: true, version: VERSION, uid: process.getuid?.() ?? null }),
-      "/api/login-info": () =>
-        Response.json({ ...owner, passwordSet: credentials.passwordHash() !== null }),
+      // Host-checked like everything else, so a page on a rebound DNS name cannot read who runs it.
+      "/api/health": (request) =>
+        guard.check(request, false)
+          ? Response.json({ ok: true, version: VERSION, uid: process.getuid?.() ?? null, pid: process.pid })
+          : new Response("forbidden", { status: 403 }),
+      "/api/login-info": (request) =>
+        guard.check(request, false)
+          ? Response.json({ ...owner, passwordSet: credentials.passwordHash() !== null })
+          : new Response("forbidden", { status: 403 }),
       "/api/me": (request) =>
         isAuthed(request) ? Response.json({ ok: true }) : new Response("unauthorized", { status: 401 }),
       "/api/login": {
@@ -824,10 +856,10 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
                 headers: { "Retry-After": String(Math.ceil(wait / 1000)) },
               });
             }
-            if (!(await credentials.verifyPassword(body.password))) {
-              throttle.failed();
-              return new Response("unauthorized", { status: 401 });
-            }
+            // Counted before it is checked: guesses sent at once must not all pass the lock while
+            // the first ones are still being verified.
+            throttle.failed();
+            if (!(await credentials.verifyPassword(body.password))) return new Response("unauthorized", { status: 401 });
             throttle.succeeded();
             return loggedIn(request);
           }
@@ -869,8 +901,12 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       },
     },
     fetch: () => new Response("not found", { status: 404 }),
+    // Bodies are small JSON: a sign-in, a board of at most 500 tasks.
+    maxRequestBodySize: 4 * 1024 * 1024,
     websocket: {
       data: {} as ClientData,
+      backpressureLimit: MAX_CLIENT_BACKLOG,
+      closeOnBackpressureLimit: true,
       open(client) {
         clients.add(client);
         sendJson(client, { t: "hello", version: VERSION });
@@ -887,7 +923,13 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         } catch {
           return;
         }
-        onClientMessage(client, message);
+        if (typeof message !== "object" || message === null) return;
+        // A message that trips over something must not take the server, and every terminal's view, down.
+        try {
+          onClientMessage(client, message);
+        } catch (error) {
+          log(`a browser's ${String(message.t).slice(0, 40)} message failed: ${(error as Error).message}`);
+        }
       },
       close(client) {
         clients.delete(client);

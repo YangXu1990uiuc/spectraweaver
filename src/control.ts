@@ -9,6 +9,7 @@
 import { resolve } from "node:path";
 import { ownTab } from "./board-cli.ts";
 import { fail, flag, parseFlags } from "./cli-args.ts";
+import { shellQuote } from "./server/agents.ts";
 import { daemonCall, daemonHello, serverCall } from "./client.ts";
 import { type Paths, resolvePaths } from "./common/paths.ts";
 import type { AgentStatus, ScreenText, SessionInfo, SessionView, TabView } from "./common/protocol.ts";
@@ -50,7 +51,11 @@ export async function cmdList(args: string[]): Promise<void> {
       return;
     }
     for (const session of sessions) console.log(`${session.id}  ${stateOf(session)}  ${session.title || session.cmd || session.cwd}`);
-    console.error("(the server is not running, so tabs, banners and agents are not shown)");
+    console.error(
+      flag(flags, "tab")
+        ? "(the server is not running: these are all the terminals, as tabs, banners and agents are the server's)"
+        : "(the server is not running, so tabs, banners and agents are not shown)",
+    );
     return;
   }
   const wanted = flag(flags, "tab")?.trim().toLowerCase();
@@ -90,7 +95,7 @@ function stateOf(session: SessionInfo): string {
 }
 
 export async function cmdNew(args: string[]): Promise<void> {
-  const flags = parseFlags(args, ["size", "cwd", "tab", "banner", "show"]);
+  const flags = parseFlags(args, ["size", "cwd", "tab", "banner", "show"], { freeText: true });
   const match = /^(\d+)x(\d+)$/i.exec(flag(flags, "size") ?? "120x36");
   if (!match) fail("--size must look like 120x36");
   const paths = resolvePaths();
@@ -101,7 +106,9 @@ export async function cmdNew(args: string[]): Promise<void> {
     show: flag(flags, "show") !== undefined,
     // Relative to where the command runs, as a path given to any command is.
     cwd: resolve(flag(flags, "cwd") ?? process.cwd()),
-    cmd: flags.rest.length ? flags.rest.join(" ") : undefined,
+    // One argument is a command line as written ("claude --model opus"); several are words, each
+    // kept whole as the shell that runs them would see it (claude "fix the bug").
+    cmd: flags.rest.length === 0 ? undefined : flags.rest.length === 1 ? flags.rest[0] : flags.rest.map(shellQuote).join(" "),
     cols: Number(match[1]),
     rows: Number(match[2]),
   };
@@ -129,6 +136,7 @@ export async function cmdRead(args: string[]): Promise<void> {
   if (lines !== undefined && !/^[1-9]\d*$/.test(lines)) fail("--lines must be a positive number");
   const paths = resolvePaths();
   await needText(paths);
+  await existing(paths, id);
   const text = await daemonCall<ScreenText>(paths, { op: "text", session: id, lines: lines ? Number(lines) : undefined });
   const shown = [...text.lines];
   while (shown.length > 0 && shown.at(-1) === "") shown.pop();
@@ -136,7 +144,7 @@ export async function cmdRead(args: string[]): Promise<void> {
 }
 
 export async function cmdSend(args: string[]): Promise<void> {
-  const flags = parseFlags(args, ["key", "no-enter"]);
+  const flags = parseFlags(args, ["key", "no-enter"], { freeText: true });
   const [id, ...words] = flags.rest;
   const keys = flags.values.get("key") ?? [];
   if (!id || (words.length === 0 && keys.length === 0)) {

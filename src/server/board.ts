@@ -7,7 +7,7 @@
 
 import { type Board, type BoardTask, TASK_STATUSES, type TaskStatus } from "../common/protocol.ts";
 
-export const BOARD_LIMITS = {
+const BOARD_LIMITS = {
   tasks: 500,
   id: 40,
   title: 200,
@@ -124,7 +124,7 @@ function link(value: unknown, id: string): string {
 }
 
 /** A circle of tasks each waiting for the next, if there is one: the ids, the first repeated at the end. */
-export function findCycle(tasks: readonly BoardTask[]): string[] | null {
+function findCycle(tasks: readonly BoardTask[]): string[] | null {
   const after = new Map(tasks.map((task) => [task.id, task.after ?? []]));
   const state = new Map<string, "open" | "done">();
   const path: string[] = [];

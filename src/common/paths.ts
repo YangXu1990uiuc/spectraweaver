@@ -28,6 +28,11 @@ export interface Paths {
   /** Where earlier versions kept this host's state, now that no daemon runs there. */
   olderStateDirs: string[];
   daemonSocket: string;
+  /**
+   * Why the daemon's socket cannot be used here (its path is too long), if it cannot. Commands
+   * that need the socket refuse then (requireSocket); `config state-dir` still runs, to fix it.
+   */
+  socketProblem?: string;
   instanceFile: string;
   metaFile: string;
   daemonPidFile: string;
@@ -38,6 +43,17 @@ export interface Paths {
 
 // sockaddr_un.sun_path is 108 bytes on Linux and 104 on macOS.
 export const MAX_SOCKET_PATH = 100;
+
+/** Why a socket cannot live at this path (too long, in bytes), or null if it can. */
+export function socketPathProblem(socketPath: string): string | null {
+  const bytes = Buffer.byteLength(socketPath);
+  return bytes > MAX_SOCKET_PATH ? `too long for a Unix socket (${bytes} bytes, limit ${MAX_SOCKET_PATH})` : null;
+}
+
+/** Throws, with what to do, if the daemon's socket cannot be used where these paths put it. */
+export function requireSocket(paths: Paths): void {
+  if (paths.socketProblem) throw new Error(paths.socketProblem);
+}
 
 const MAX_HOST_KEY = 20;
 
@@ -120,13 +136,13 @@ export function resolvePaths(env: Record<string, string | undefined> = process.e
   }
   const olderStateDirs = running ? [] : older.map(({ dir }) => dir).filter((dir) => existsSync(dir));
   const daemonSocket = join(stateDir, "daemon.sock");
-  if (daemonSocket.length > MAX_SOCKET_PATH) {
-    throw new Error(
-      `the state directory's path is too long for a Unix socket (${daemonSocket.length} bytes, ` +
-        `limit ${MAX_SOCKET_PATH}): ${stateDir}\nChoose a shorter one with \`spectraweaver config state-dir PATH\`.`,
-    );
-  }
+  const problem = socketPathProblem(daemonSocket);
   return {
+    ...(problem && {
+      socketProblem:
+        `the state directory's path is ${problem}: ${stateDir}\n` +
+        "Choose a shorter one with `spectraweaver config state-dir PATH`.",
+    }),
     configDir,
     configFile,
     tokenFile: join(configDir, "auth.token"),

@@ -117,7 +117,7 @@ function latestIn(agent: Agent, cwd: string, pid: number, claimed: Set<string>, 
 }
 
 /** Where an agent process keeps its files: `dirs`, unless its environment names others. */
-export function agentDirsOf(pid: number, dirs: AgentDirs): AgentDirs {
+function agentDirsOf(pid: number, dirs: AgentDirs): AgentDirs {
   return agentDirs({ CLAUDE_CONFIG_DIR: dirs.claude, CODEX_HOME: dirs.codex, ...agentEnv(pid) });
 }
 

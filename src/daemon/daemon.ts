@@ -8,7 +8,7 @@ import { chmodSync, existsSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { networkFilesystem } from "../common/files.ts";
-import { ensurePrivateDir, type Paths } from "../common/paths.ts";
+import { ensurePrivateDir, expandHome, type Paths, requireSocket } from "../common/paths.ts";
 import {
   type DaemonEvent,
   type DaemonRequestFrame,
@@ -35,7 +35,6 @@ export interface DaemonOptions {
 }
 
 export interface DaemonHandle {
-  readonly sessions: ReadonlyMap<string, Session>;
   stop(): Promise<void>;
 }
 
@@ -44,13 +43,14 @@ export interface DaemonHandle {
 const MAX_CONNECTION_BACKLOG = 128 * 1024 * 1024;
 
 /** Requests beyond protocol 1's first set that this daemon answers; the hello reply carries them. */
-export const DAEMON_FEATURES = ["resize", "text"];
+const DAEMON_FEATURES = ["resize", "text"];
 
 /** The most lines a "text" request returns: the default scrollback plus a tall screen. */
 const MAX_TEXT_ROWS = 20_000;
 
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
   const log = options.log ?? ((message: string) => console.error(`[daemon] ${message}`));
+  requireSocket(options.paths);
   const socketPath = options.paths.daemonSocket;
   ensurePrivateDir(options.paths.stateDir);
   if (existsSync(socketPath)) {
@@ -72,6 +72,8 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   const remove = (session: Session) => {
     if (!sessions.delete(session.id)) return;
     session.dispose();
+    // Its engine and scrollback go only once no connection holds it.
+    for (const connection of connections) connection.forget(session);
     broadcast({ type: "removed", session: session.id });
   };
 
@@ -136,7 +138,6 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle>
   log(`listening on ${socketPath} (pid ${process.pid})`);
 
   return {
-    sessions,
     async stop() {
       listener.stop(true);
       for (const session of sessions.values()) session.dispose();
@@ -196,6 +197,11 @@ class Connection implements Subscriber {
     this.writer.drain();
   }
 
+  /** A session that was removed: nothing more to send for it. */
+  forget(session: Session): void {
+    this.subscriptions.delete(session);
+  }
+
   onClose(): void {
     this.closed = true;
     for (const session of this.subscriptions) session.unsubscribe(this);
@@ -250,12 +256,18 @@ class Connection implements Subscriber {
       case "input": {
         const data = request.binary ? Buffer.from(request.data, "latin1") : request.data;
         this.session(request.session).writeInput(data);
+        this.respond(request.id, null); // one-way (id 0) as servers send it; answered if asked
         return;
       }
       case "subscribe": {
         const session = this.session(request.session);
         this.subscriptions.add(session);
-        session.subscribe(this, (snapshot) => this.respond(request.id, snapshot));
+        // An unsubscribe that arrives before the snapshot is taken wins.
+        session.subscribe(
+          this,
+          (snapshot) => this.respond(request.id, snapshot),
+          () => this.subscriptions.has(session),
+        );
         return;
       }
       case "snapshot":
@@ -278,6 +290,7 @@ class Connection implements Subscriber {
       }
       case "focus":
         this.session(request.session).setFocus(`${this.id}:${request.client}`, request.focused);
+        this.respond(request.id, null);
         return;
       case "resize": {
         const session = this.session(request.session);
@@ -347,8 +360,7 @@ function userShell(): string {
 function resolveCwd(requested: string | undefined): string {
   const home = homedir();
   if (!requested?.trim()) return home;
-  const expanded = requested.trim().replace(/^~(?=$|\/)/, home);
-  const path = resolve(home, expanded);
+  const path = resolve(home, expandHome(requested.trim()));
   let isDirectory = false;
   try {
     isDirectory = statSync(path).isDirectory();

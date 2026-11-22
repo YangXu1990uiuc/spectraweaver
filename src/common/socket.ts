@@ -20,10 +20,6 @@ export class QueuedWriter {
     private readonly onOverflow: () => void,
   ) {}
 
-  get backlog(): number {
-    return this.queuedBytes;
-  }
-
   send(frame: Uint8Array): void {
     let rest = frame;
     if (this.queue.length === 0) {

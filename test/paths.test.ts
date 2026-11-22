@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrateOlderState } from "../src/common/config.ts";
 import { networkFilesystem } from "../src/common/files.ts";
-import { hostKey, resolvePaths } from "../src/common/paths.ts";
+import { hostKey, requireSocket, resolvePaths } from "../src/common/paths.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -127,11 +127,15 @@ test("a per-host state directory under the former name is found too", () => {
   expect(migrateOlderState(paths)).toEqual([`moved   instance.json from ${formerHostDir} into ${paths.stateDir}`]);
 });
 
-test("a state path too long for a Unix socket is refused with advice", () => {
+test("a state path too long for a Unix socket is refused with advice, where the socket is needed", () => {
   const long = `/tmp/${"x".repeat(120)}`;
-  expect(() => resolvePaths({ SPECTRAWEAVER_CONFIG_DIR: "/tmp/cfg", SPECTRAWEAVER_STATE_DIR: long })).toThrow(
-    /too long for a Unix socket/,
-  );
+  // Resolving still works, so `spectraweaver config state-dir` can move the state somewhere shorter.
+  const paths = resolvePaths({ SPECTRAWEAVER_CONFIG_DIR: "/tmp/cfg", SPECTRAWEAVER_STATE_DIR: long });
+  expect(paths.socketProblem).toMatch(/too long for a Unix socket .*\n.*spectraweaver config state-dir PATH/);
+  expect(() => requireSocket(paths)).toThrow(/too long for a Unix socket/);
+  // Bytes count, not characters.
+  const wide = resolvePaths({ SPECTRAWEAVER_CONFIG_DIR: "/tmp/cfg", SPECTRAWEAVER_STATE_DIR: `/tmp/${"é".repeat(40)}` });
+  expect(wide.socketProblem).toBeDefined();
 });
 
 test("local directories are not reported as network filesystems", () => {

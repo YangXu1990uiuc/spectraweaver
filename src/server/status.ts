@@ -52,6 +52,8 @@ export class AgentStatusReader {
   constructor(
     private readonly conversations: Conversations,
     private readonly dirs: AgentDirs,
+    /** How long a program must print nothing to be taken as no longer working (screen fallback). */
+    private readonly quietMs = QUIET_MS,
   ) {}
 
   /**
@@ -63,9 +65,9 @@ export class AgentStatusReader {
     if (agent.name === "claude") {
       const registry = claudeRegistry(pid, this.dirs);
       const id = typeof registry?.sessionId === "string" ? registry.sessionId : conversation;
-      status = claudeStatus(registry, this.transcript("claude", id), screen, now);
+      status = claudeStatus(registry, this.transcript("claude", id), screen, now, this.quietMs);
     } else {
-      status = codexStatus(this.transcript("codex", conversation), screen, now);
+      status = codexStatus(this.transcript("codex", conversation), screen, now, this.quietMs);
     }
     return { name: agent.name, ...(status ?? { activity: "unknown" }) };
   }
@@ -110,6 +112,7 @@ export function claudeStatus(
   transcript: Line[] | null,
   screen: ScreenText | null,
   now: number,
+  quietMs = QUIET_MS,
 ): Found | null {
   const status = registry?.status;
   const warning = transcript ? claudeWarning(transcript) : undefined;
@@ -125,7 +128,7 @@ export function claudeStatus(
   }
   if (status === "idle") return withWarning({ activity: "idle" }, warning);
   // Versions that write no status.
-  return screenStatus("claude", screen, now);
+  return screenStatus("claude", screen, now, quietMs);
 }
 
 function waitingLabel(waitingFor: unknown): string {
@@ -211,7 +214,7 @@ interface CodexTurn {
   silent?: boolean;
 }
 
-export function codexStatus(rollout: Line[] | null, screen: ScreenText | null, now: number): Found | null {
+export function codexStatus(rollout: Line[] | null, screen: ScreenText | null, now: number, quietMs = QUIET_MS): Found | null {
   const signals = screen ? screenSignals("codex", screen.lines) : {};
   // Approval prompts come up in the middle of a turn and are not recorded.
   if (signals.waiting) return { activity: "waiting", reason: signals.waiting };
@@ -220,7 +223,7 @@ export function codexStatus(rollout: Line[] | null, screen: ScreenText | null, n
   if (turn?.activity === "working") return withWarning({ activity: "working" }, warning);
   if (turn?.activity === "stopped") return { activity: "stopped", reason: turn.reason, detail: turn.detail };
   if (turn?.activity === "idle" && !turn.silent) return withWarning({ activity: "idle", reason: turn.reason }, warning);
-  return screenStatus("codex", screen, now) ?? (turn ? { activity: turn.activity } : null);
+  return screenStatus("codex", screen, now, quietMs) ?? (turn ? { activity: turn.activity } : null);
 }
 
 /** Where the last turn in a rollout stands. */
@@ -343,11 +346,11 @@ function screenStop(line: string): Stop | null {
 }
 
 /** What the screen alone tells: a program printing is working; a quiet one shows why it stopped. */
-function screenStatus(agent: AgentName, screen: ScreenText | null, now: number): Found | null {
+function screenStatus(agent: AgentName, screen: ScreenText | null, now: number, quietMs: number): Found | null {
   if (!screen) return null;
   const signals = screenSignals(agent, screen.lines);
   if (signals.waiting) return { activity: "waiting", reason: signals.waiting };
-  const quiet = screen.lastOutputAt === null || now - screen.lastOutputAt >= QUIET_MS;
+  const quiet = screen.lastOutputAt === null || now - screen.lastOutputAt >= quietMs;
   if (!quiet) return withWarning({ activity: "working" }, signals.warning);
   if (signals.stop) return { activity: "stopped", ...signals.stop };
   return withWarning({ activity: "idle" }, signals.warning);

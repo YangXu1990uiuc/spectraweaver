@@ -5,7 +5,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type TabView, TILE_COLORS } from "../src/common/protocol.ts";
+import { TILE_COLORS } from "../src/common/protocol.ts";
 import { MetaStore } from "../src/server/meta.ts";
 import { tempPaths } from "./helpers.ts";
 

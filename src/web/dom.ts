@@ -48,6 +48,17 @@ export function saveSetting(key: string, value: string): void {
   }
 }
 
+/** "just now", "5 min ago", "3 h ago", "yesterday", or the date. */
+export function ago(at: number, now = Date.now()): string {
+  const minutes = Math.round((now - at) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  if (hours < 48) return "yesterday";
+  return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 /** Grids use matrix order: "2x3" is 2 rows of 3 tiles. */
 export interface Grid {
   rows: number;

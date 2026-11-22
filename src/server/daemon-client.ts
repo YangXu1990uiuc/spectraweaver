@@ -34,6 +34,8 @@ export class DaemonClient {
   private writer: QueuedWriter | null = null;
   private ready = false;
   private stopped = false;
+  /** How long to wait before the next attempt to connect. */
+  private retryDelay = 100;
   private nextId = 1;
   private readonly pending = new Map<number, (response: DaemonResponse) => void>();
 
@@ -80,17 +82,24 @@ export class DaemonClient {
     });
   }
 
+  /**
+   * Connects, retrying with a growing delay. The delay carries over a connection that closed
+   * before it was ready (a daemon that refuses this protocol), so that does not spin.
+   */
   private async connectLoop(): Promise<void> {
-    let delay = 100;
     while (!this.stopped) {
       try {
         await this.connectOnce();
         return;
       } catch {
-        await Bun.sleep(delay);
-        delay = Math.min(delay * 2, 2000);
+        await this.backOff();
       }
     }
+  }
+
+  private async backOff(): Promise<void> {
+    await Bun.sleep(this.retryDelay);
+    this.retryDelay = Math.min(this.retryDelay * 2, 2000);
   }
 
   private async connectOnce(): Promise<void> {
@@ -125,6 +134,7 @@ export class DaemonClient {
         return;
       }
       this.ready = true;
+      this.retryDelay = 100;
       this.events.onConnected(hello);
     });
   }
@@ -138,7 +148,9 @@ export class DaemonClient {
     this.pending.clear();
     for (const callback of callbacks) callback({ t: "res", id: 0, ok: false, error: "daemon disconnected" });
     if (wasReady) this.events.onDisconnected();
-    if (!this.stopped) void this.connectLoop();
+    if (this.stopped) return;
+    if (wasReady) void this.connectLoop();
+    else void this.backOff().then(() => this.connectLoop());
   }
 
   private onFrame(kind: number, payload: Uint8Array): void {

@@ -25,3 +25,5 @@ jobs:
       - run: bun run typecheck
       - run: bun run check-headers
       - run: bun test
+      # The single-file binary bundles the web client too: build it and run it once.
+      - run: bun build --compile --minify src/cli.ts --outfile "$RUNNER_TEMP/spectraweaver" && "$RUNNER_TEMP/spectraweaver" board --help >/dev/null

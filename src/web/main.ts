@@ -15,6 +15,7 @@ import {
   TAB_COLORS,
   type TabView,
 } from "../common/protocol.ts";
+import { agentLive } from "./board-live.ts";
 import { BoardWindow, boardAlarms, DEFAULT_BOARD_FRAME } from "./board-view.ts";
 import { adoptFormerSettings, el, type Grid, loadSetting, parseGrid, randomId, saveSetting } from "./dom.ts";
 import { detectPlatform } from "./keymap.ts";
@@ -54,8 +55,7 @@ const belled = new Set<string>();
 
 /** Its agent stopped, warns, or waits for an answer: someone has to look. */
 function needsSomeone(session: SessionView): boolean {
-  const agent = session.agent;
-  return agent !== undefined && (agent.activity === "stopped" || agent.activity === "waiting" || agent.warning !== undefined);
+  return session.agent !== undefined && agentLive("", session.agent, 0).alarm !== null;
 }
 let socket: WebSocket | null = null;
 let connected = false;
@@ -155,11 +155,7 @@ const tabStrip = new TabStrip({
   },
   move: (id, index) => send({ t: "tab-move", id, index }),
   openInWindow: (id) => window.open(`${location.pathname}#t=${id}`, "_blank"),
-  showBoard: (id) => {
-    showTab(id);
-    send({ t: "board-window", tab: id, open: true });
-    raiseBoard();
-  },
+  showBoard: (id) => openBoard(id),
   moveSession: (sessionId, tabId) => send({ t: "session-move", session: sessionId, tab: tabId }),
 });
 
@@ -221,8 +217,10 @@ const PAUSE_WHEN_HIDDEN_MS = 15_000;
 // After sleep the connection can be dead without the browser noticing for minutes.
 const SNAPSHOT_TIMEOUT_MS = 10_000;
 let hiddenTimer: ReturnType<typeof setTimeout> | undefined;
+let arrivalCheck: ReturnType<typeof setTimeout> | undefined;
 document.addEventListener("visibilitychange", () => {
   clearTimeout(hiddenTimer);
+  clearTimeout(arrivalCheck);
   if (document.visibilityState === "hidden") {
     hiddenTimer = setTimeout(() => {
       for (const tile of tiles.values()) tile.terminal?.pause();
@@ -234,7 +232,7 @@ document.addEventListener("visibilitychange", () => {
     // The GPU may also have dropped what the terminals drew.
     tile.terminal?.repaint();
   }
-  setTimeout(() => {
+  arrivalCheck = setTimeout(() => {
     const views = [...tiles.values()].map((tile) => tile.terminal).filter((view) => view !== null);
     const noneArrived = views.length > 0 && views.every((view) => view.waitingLongerThan(SNAPSHOT_TIMEOUT_MS - 500));
     if (noneArrived && daemonUp) reconnectNow();
@@ -246,11 +244,28 @@ function gridOf(tab: TabView | null): Grid {
   return parseGrid(tab?.grid ?? "") ?? { rows: 2, cols: 2 };
 }
 
+/**
+ * Stores the places worked out for the shown tab's windows that have none yet (and the board's).
+ * Such a window is put in front on every render; once another is raised above it, it must
+ * keep its place in the stack instead of coming back on top.
+ */
+function pinUnplaced(): void {
+  const tab = currentView().tab;
+  for (const tile of tiles.values()) {
+    const session = sessions.get(tile.sessionId);
+    if (session && !session.frame && tile.windowFrame) send({ t: "session-frame", session: session.id, frame: tile.windowFrame });
+  }
+  if (tab && board && boardTab === tab.id && !tab.boardWindow?.frame && board.windowFrame) {
+    send({ t: "board-window", tab: tab.id, frame: board.windowFrame });
+  }
+}
+
 /** Brings a window in front of the others in its tab; the stacking is part of the shared layout. */
 function raiseWindow(sessionId: string): void {
   const tile = tiles.get(sessionId);
   const mine = tile?.windowFrame;
   if (!tile || !mine) return;
+  pinUnplaced();
   const others: Frame[] = [];
   for (const other of tiles.values()) if (other !== tile && other.windowFrame) others.push(other.windowFrame);
   if (board?.windowFrame) others.push(board.windowFrame);
@@ -264,7 +279,8 @@ function raiseWindow(sessionId: string): void {
 function raiseBoard(): void {
   const mine = board?.windowFrame;
   const tab = currentView().tab;
-  if (!board || !mine || !tab) return;
+  if (!board || !mine || !tab || boardTab !== tab.id) return;
+  pinUnplaced();
   const others = [...tiles.values()].flatMap((tile) => (tile.windowFrame ? [tile.windowFrame] : []));
   if (!others.some((frame) => frame.z >= mine.z)) return;
   const raised = { ...mine, z: topZ(others) + 1 };
@@ -297,6 +313,17 @@ function showTerminal(sessionId: string): void {
   if (session.hidden) send({ t: "session-hidden", session: sessionId, hidden: false });
 }
 
+/** Opens a tab's board window in front, from the tab's menu or its taskbar; an empty one says how to get a board. */
+function openBoard(tabId: string): void {
+  const tab = tabs.find((candidate) => candidate.id === tabId);
+  if (!tab) return;
+  if (currentView().tab?.id !== tabId || currentView().focus) showTab(tabId);
+  else pinUnplaced();
+  if (!tab.boardWindow?.open) send({ t: "board-window", tab: tabId, open: true });
+  const frame = tab.boardWindow?.frame ?? { ...DEFAULT_BOARD_FRAME, z: 0 };
+  send({ t: "board-window", tab: tabId, frame: { ...frame, z: topOfTab(tabId) + 1 } });
+}
+
 /** A task was double-clicked on the board. */
 function openTask(task: BoardTask): void {
   if (!task.session) {
@@ -318,7 +345,7 @@ function copyText(text: string): void {
   if (!navigator.clipboard) toast("Copying needs HTTPS or localhost; the text is selected, press Ctrl+C.");
 }
 
-/** What the tabs' marks, the board and the taskbar show of a terminal; its title is not part of it. */
+/** What the tabs' marks, the board and the taskbar's badges show of a terminal (titles change too often to redraw them for). */
 function stateOf(session: SessionView): string {
   return JSON.stringify([session.agent, session.exited, session.atPrompt, session.banner, session.color]);
 }
@@ -394,16 +421,19 @@ function setStatus(): void {
   notice.hidden = connected && daemonUp;
 }
 
-/** Browser-tab title and icon show the workspace, so several open windows are easy to tell apart. */
-function updateWindowIdentity(tab: TabView | null): void {
-  const now = Date.now();
-  const waiting =
-    [...sessions.values()].filter((session) => belled.has(session.id) || needsSomeone(session)).length +
-    tabs.reduce((sum, candidate) => sum + boardAlarms(candidate, sessions, now).unshown, 0);
+let shownIcon = "";
+
+/**
+ * Browser-tab title and icon show the workspace, so several open windows are easy to tell apart;
+ * `waiting` counts what needs someone, in every tab.
+ */
+function updateWindowIdentity(tab: TabView | null, waiting: number): void {
   document.title = `${waiting > 0 ? `(${waiting}) ` : ""}${tab ? `${tab.name} · ` : ""}SpectraWeaver`;
   const color = tab?.color ?? "#3794ff";
   const dot = waiting > 0 ? '<circle cx="12" cy="4" r="3.5" fill="#cca700" stroke="#1f1f1f" stroke-width="1"/>' : "";
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="12" rx="3" fill="${color}"/><path d="M4 6l2.5 2L4 10M8 10h4" stroke="#1f1f1f" stroke-width="1.5" fill="none"/>${dot}</svg>`;
+  if (svg === shownIcon) return;
+  shownIcon = svg;
   favicon.href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
@@ -533,6 +563,10 @@ class Tile {
     return this.view;
   }
 
+  get sessionId(): string {
+    return this.session.id;
+  }
+
   get windowFrame(): Frame | null {
     return this.frame;
   }
@@ -543,6 +577,9 @@ class Tile {
    */
   setFrame(frame: Frame | null): void {
     this.frame = frame;
+    // While it is being dragged, the window is where the pointer put it; the drag's end lays it
+    // out from its frame again.
+    if (this.chrome.active) return;
     const style = this.root.style;
     if (frame) {
       style.left = `${(frame.x * 100).toFixed(2)}%`;
@@ -591,19 +628,14 @@ class Tile {
   private showAgent(agent: AgentStatus | undefined): void {
     const badge = this.agentBadge;
     badge.hidden = !agent;
-    const alarm = agent !== undefined && (agent.activity === "stopped" || agent.warning !== undefined);
-    this.root.classList.toggle("alarm", alarm);
-    this.root.classList.toggle("asking", agent?.activity === "waiting");
-    if (!agent) return;
-    const text = alarm
-      ? `⚠ ${agent.activity === "stopped" ? (agent.reason ?? "stopped") : agent.warning}`
-      : agent.activity === "waiting"
-        ? (agent.reason ?? "needs you")
-        : agent.activity === "unknown"
-          ? agent.name
-          : agent.activity;
-    if (badge.textContent !== text) badge.textContent = text;
-    badge.className = `badge agent ${alarm ? "stopped" : agent.activity}`;
+    // The same words as on the board and in the taskbar, without the idle time, which a window
+    // does not keep up to date.
+    const live = agent ? agentLive("", agent, Date.now(), false) : null;
+    this.root.classList.toggle("alarm", live?.alarm === "red");
+    this.root.classList.toggle("asking", live?.alarm === "amber");
+    if (!agent || !live) return;
+    if (badge.textContent !== live.text) badge.textContent = live.text;
+    badge.className = `badge agent ${live.kind}`;
     const reason = agent.reason ? ` (${agent.reason})` : "";
     badge.title = [`${agent.name}: ${agent.activity}${reason}`, agent.warning && `warning: ${agent.warning}`, agent.detail]
       .filter(Boolean)
@@ -711,7 +743,6 @@ function render(): void {
       }
     }
   });
-  if (board && grid.lastElementChild !== board.root) grid.appendChild(board.root);
 
   const putAway = windowed && ordered.some((session) => session.tab === view.tab?.id && session.hidden);
   empty.hidden = visible.length > 0 || board !== null || putAway;
@@ -727,95 +758,139 @@ function render(): void {
 
 /**
  * What follows the terminals' states: the tabs' marks and counts, the browser tab's title, the
- * board and the taskbar. Cheap, so it runs on every change of a terminal.
+ * board and the taskbar. Runs when a terminal's state changes (not its title); each part
+ * updates in place, and the board only when what it shows changed.
  */
 function renderStatus(): void {
   const view = currentView();
   const now = Date.now();
   const counts = new Map<string, number>();
   const alerts = new Set<string>();
+  let waiting = 0;
   for (const session of sessions.values()) {
     counts.set(session.tab, (counts.get(session.tab) ?? 0) + 1);
-    if (belled.has(session.id) || needsSomeone(session)) alerts.add(session.tab);
+    if (belled.has(session.id) || needsSomeone(session)) {
+      alerts.add(session.tab);
+      waiting++;
+    }
   }
-  for (const tab of tabs) if (boardAlarms(tab, sessions, now).unshown > 0) alerts.add(tab.id);
+  const alarms = new Map(tabs.map((tab) => [tab.id, boardAlarms(tab, sessions, now)]));
+  for (const [tab, counted] of alarms) {
+    if (counted.unshown > 0) alerts.add(tab);
+    waiting += counted.unshown;
+  }
   tabStrip.render({ tabs, activeId: view.tab?.id ?? null, counts, alerts });
-  if (board && view.tab) board.update(view.tab, sessions);
-  renderTaskbar(view.focus ? null : view.tab);
-  updateWindowIdentity(view.tab);
+  if (board && view.tab && boardTab === view.tab.id) board.update(view.tab, sessions);
+  taskbarRed = view.tab ? (alarms.get(view.tab.id)?.red ?? 0) : 0;
+  renderTaskbar(view.focus ? null : view.tab, taskbarRed);
+  updateWindowIdentity(view.tab, waiting);
 }
 
 /** What a terminal's chip in the taskbar says, if it needs someone. */
 function alertOf(session: SessionView): { text: string; kind: string } | null {
-  const agent = session.agent;
-  if (agent && (agent.activity === "stopped" || agent.warning)) {
-    return { text: `⚠ ${agent.activity === "stopped" ? (agent.reason ?? "stopped") : agent.warning}`, kind: "stopped" };
-  }
-  if (agent?.activity === "waiting") return { text: agent.reason ?? "needs you", kind: "waiting" };
+  const live = session.agent ? agentLive("", session.agent, 0, false) : null;
+  if (live?.alarm) return { text: live.text, kind: live.kind };
   if (belled.has(session.id)) return { text: "●", kind: "bell" };
   return null;
+}
+
+interface Chip {
+  button: HTMLButtonElement;
+  swatch: HTMLSpanElement;
+  label: HTMLSpanElement;
+  badge: HTMLSpanElement;
+  click: () => void;
+}
+
+/** The board's red alarms in the shown tab, as the taskbar last showed them. */
+let taskbarRed = 0;
+
+/** The taskbar's chips by window ("board", or a terminal's id), kept and updated in place. */
+const chips = new Map<string, Chip>();
+
+function chipFor(key: string): Chip {
+  const known = chips.get(key);
+  if (known) return known;
+  const swatch = el("span", { class: "chip-swatch" });
+  const label = el("span", { class: "chip-label" });
+  const badge = el("span", { class: "badge agent", hidden: "" });
+  const chip: Chip = { button: el("button", { class: "task-chip" }, [swatch, label, badge]), swatch, label, badge, click: () => {} };
+  chip.button.addEventListener("click", () => chip.click());
+  chips.set(key, chip);
+  return chip;
+}
+
+/** Updates a chip only where it changed: a chip replaced under the pointer would lose the click. */
+function setChip(
+  chip: Chip,
+  text: string,
+  color: string,
+  state: { open: boolean; front: boolean },
+  alert: { text: string; kind: string } | null,
+  click: () => void,
+): void {
+  chip.click = click;
+  const className = `task-chip${state.open ? " open" : ""}${state.front ? " front" : ""}`;
+  if (chip.button.className !== className) chip.button.className = className;
+  if (chip.label.textContent !== text) chip.label.textContent = text;
+  if (chip.button.title !== text) chip.button.title = text;
+  chip.button.setAttribute("aria-pressed", String(state.open));
+  const swatch = `color-mix(in srgb, ${color} 50%, white)`;
+  if (chip.swatch.style.background !== swatch) chip.swatch.style.background = swatch;
+  chip.badge.hidden = alert === null;
+  if (alert) {
+    if (chip.badge.textContent !== alert.text) chip.badge.textContent = alert.text;
+    const badgeClass = `badge agent ${alert.kind}`;
+    if (chip.badge.className !== badgeClass) chip.badge.className = badgeClass;
+  }
 }
 
 /**
  * The taskbar: every window of the tab, the board first. A click brings a window out of the
  * taskbar or to the front; on the window already in front, it puts it away. Shown once the tab
- * has a board or a window put away.
+ * has a board or a window put away. `red` is the board's red alarms.
  */
-function renderTaskbar(tab: TabView | null): void {
+function renderTaskbar(tab: TabView | null, red: number): void {
   const inTab = tab
     ? [...sessions.values()].filter((session) => session.tab === tab.id).sort((a, b) => a.createdAt - b.createdAt)
     : [];
   const hasBoard = tab !== null && (tab.board !== undefined || tab.boardWindow?.open === true);
   taskbar.hidden = !tab || (!hasBoard && !inTab.some((session) => session.hidden));
-  if (taskbar.hidden || !tab) {
-    taskbar.replaceChildren();
-    return;
-  }
-  const frames = [...tiles.values()].flatMap((tile) => (tile.windowFrame ? [tile.windowFrame] : []));
-  if (board?.windowFrame) frames.push(board.windowFrame);
-  const front = topZ(frames);
-  const chip = (label: string, color: string, open: boolean, inFront: boolean, alert: { text: string; kind: string } | null, click: () => void) => {
-    const button = el("button", { class: `task-chip${open ? " open" : ""}${inFront ? " front" : ""}`, title: label }, [
-      el("span", { class: "chip-swatch" }),
-      el("span", { class: "chip-label" }, [label]),
-    ]);
-    (button.firstChild as HTMLElement).style.background = `color-mix(in srgb, ${color} 50%, white)`;
-    if (alert) button.append(el("span", { class: `badge agent ${alert.kind}` }, [alert.text]));
-    button.setAttribute("aria-pressed", String(open));
-    button.addEventListener("click", click);
-    return button;
-  };
-  const chips: HTMLButtonElement[] = [];
-  if (hasBoard) {
-    const open = board !== null;
-    const { red } = boardAlarms(tab, sessions, Date.now());
-    chips.push(
-      chip("▦ Board", "#90a4ae", open, open && board!.windowFrame?.z === front, red > 0 ? { text: `⚠ ${red}`, kind: "stopped" } : null, () => {
-        if (!open) {
-          send({ t: "board-window", tab: tab.id, open: true });
-          const frame = tab.boardWindow?.frame ?? { ...DEFAULT_BOARD_FRAME, z: 0 };
-          send({ t: "board-window", tab: tab.id, frame: { ...frame, z: topOfTab(tab.id) + 1 } });
-        } else if (board!.windowFrame?.z === front) {
-          send({ t: "board-window", tab: tab.id, open: false });
-        } else {
-          raiseBoard();
-        }
-      }),
-    );
-  }
-  for (const session of inTab) {
-    const tile = tiles.get(session.id);
-    const open = !session.hidden;
-    const inFront = open && tile?.windowFrame?.z === front;
-    chips.push(
-      chip(session.banner || session.title || session.id, session.color, open, inFront, alertOf(session), () => {
+  const keys: string[] = [];
+  if (!taskbar.hidden && tab) {
+    const frames = [...tiles.values()].flatMap((tile) => (tile.windowFrame ? [tile.windowFrame] : []));
+    if (board?.windowFrame) frames.push(board.windowFrame);
+    const front = topZ(frames);
+    if (hasBoard) {
+      const open = board !== null && boardTab === tab.id;
+      const inFront = open && board!.windowFrame?.z === front;
+      keys.push("board");
+      setChip(chipFor("board"), "▦ Board", "#90a4ae", { open, front: inFront }, red > 0 ? { text: `⚠ ${red}`, kind: "stopped" } : null, () => {
+        if (!open) openBoard(tab.id);
+        else if (inFront) send({ t: "board-window", tab: tab.id, open: false });
+        else raiseBoard();
+      });
+    }
+    for (const session of inTab) {
+      const open = !session.hidden;
+      const inFront = open && tiles.get(session.id)?.windowFrame?.z === front;
+      keys.push(session.id);
+      setChip(chipFor(session.id), session.banner || session.title || session.id, session.color, { open, front: inFront }, alertOf(session), () => {
         if (session.hidden) showTerminal(session.id);
         else if (inFront) send({ t: "session-hidden", session: session.id, hidden: true });
         else raiseWindow(session.id);
-      }),
-    );
+      });
+    }
   }
-  taskbar.replaceChildren(...chips);
+  for (const [key, chip] of chips) {
+    if (keys.includes(key)) continue;
+    chip.button.remove();
+    chips.delete(key);
+  }
+  keys.forEach((key, index) => {
+    const button = chips.get(key)!.button;
+    if (taskbar.children[index] !== button) taskbar.insertBefore(button, taskbar.children[index] ?? null);
+  });
 }
 
 // Times on the board ("3 min ago", "idle 12m") move on.
@@ -855,7 +930,11 @@ function onServerMessage(message: ServerMessage): void {
         sameFrame(previous.frame, message.session.frame)
       ) {
         tiles.get(message.session.id)?.update(message.session);
-        if (!previous || stateOf(previous) !== stateOf(message.session)) renderStatus();
+        if (stateOf(previous) !== stateOf(message.session)) renderStatus();
+        // A terminal without a banner is named by its title in the taskbar.
+        else if (!message.session.banner && previous.title !== message.session.title && !taskbar.hidden) {
+          renderTaskbar(currentView().focus ? null : currentView().tab, taskbarRed);
+        }
       } else {
         render();
       }
@@ -869,11 +948,15 @@ function onServerMessage(message: ServerMessage): void {
     case "snapshot":
       tiles.get(message.snapshot.session)?.terminal?.applySnapshot(message.snapshot);
       return;
-    case "bell":
-      if (tiles.get(message.session)?.terminal?.hasFocus) return;
+    case "bell": {
+      // Notifications arrive as bells too, often: a terminal already marked needs nothing more.
+      if (tiles.get(message.session)?.terminal?.hasFocus || belled.has(message.session)) return;
       belled.add(message.session);
-      render();
+      const session = sessions.get(message.session);
+      if (session) tiles.get(message.session)?.update(session);
+      renderStatus();
       return;
+    }
     case "lost":
       lost = message.sessions;
       restoreDialog.setLost(lost);
@@ -896,9 +979,23 @@ function onOutput(bytes: Uint8Array): void {
 /** The newest connection; events from older ones are ignored. */
 let current: WebSocket | null = null;
 
+/** The next attempt to reconnect, while one is waiting: there is never more than one. */
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+
+function scheduleReconnect(): void {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => void reconnect(), reconnectDelay);
+  reconnectDelay = Math.min(reconnectDelay * 2, 5000);
+}
+
 function connect(): void {
+  clearTimeout(reconnectTimer);
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`);
+  // The connection this replaces, if it is still open or opening, would go on receiving
+  // every terminal's output that no one reads.
+  const previous = current;
   current = ws;
+  if (previous && previous.readyState <= WebSocket.OPEN) previous.close();
   ws.binaryType = "arraybuffer";
   ws.addEventListener("open", () => {
     if (ws !== current) return ws.close();
@@ -919,8 +1016,7 @@ function connect(): void {
     socket = null;
     connected = false;
     setStatus();
-    setTimeout(() => void reconnect(), reconnectDelay);
-    reconnectDelay = Math.min(reconnectDelay * 2, 5000);
+    scheduleReconnect();
   });
 }
 
@@ -932,6 +1028,7 @@ function reconnectNow(): void {
   connected = false;
   setStatus();
   stale?.close();
+  clearTimeout(reconnectTimer);
   reconnectDelay = 250;
   void reconnect();
 }
@@ -947,8 +1044,7 @@ async function reconnect(): Promise<void> {
     }
     connect();
   } catch {
-    setTimeout(() => void reconnect(), reconnectDelay);
-    reconnectDelay = Math.min(reconnectDelay * 2, 5000);
+    scheduleReconnect();
   }
 }
 

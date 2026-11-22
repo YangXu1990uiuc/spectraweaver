@@ -43,9 +43,10 @@ Terminals (for scripts and coding agents too; ID is a terminal's id, from \`ls\`
   spectraweaver read ID [--lines N]
                         print a terminal's screen as text; --lines N prints its last N lines,
                         scrollback included
-  spectraweaver send ID TEXT... [--no-enter]
+  spectraweaver send ID [--no-enter] [--] TEXT...
                         type TEXT into a terminal and press Enter; TEXT "-" reads standard input,
-                        and text of several lines goes in as one paste
+                        and text of several lines goes in as one paste (-- before text that
+                        starts with --)
   spectraweaver send ID --key NAME [--key NAME]...
                         press keys: enter, esc, tab, shift-tab, up, down, left, right, backspace,
                         ctrl-c, ctrl-d, or a single character
@@ -74,7 +75,11 @@ export interface Flags {
   rest: string[];
 }
 
-export function parseFlags(args: string[], known: string[]): Flags {
+/**
+ * Splits options from arguments. With `freeText`, the arguments are text to type or a command
+ * to run, and an unknown option says how to pass text that looks like one.
+ */
+export function parseFlags(args: string[], known: string[], options: { freeText?: boolean } = {}): Flags {
   const values = new Map<string, string[]>();
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -83,17 +88,34 @@ export function parseFlags(args: string[], known: string[]): Flags {
       rest.push(...args.slice(i + 1));
       break;
     }
-    const [name, inline] = arg.startsWith("--") ? arg.slice(2).split("=", 2) : [undefined, undefined];
-    if (name === undefined) {
+    if (!arg.startsWith("--")) {
       rest.push(arg);
       continue;
     }
-    if (!known.includes(name)) fail(`unknown option --${name}\n\n${USAGE}`);
+    // At the first "=": the value may hold more ("--banner=a=b").
+    const equals = arg.indexOf("=");
+    const name = equals < 0 ? arg.slice(2) : arg.slice(2, equals);
+    const inline = equals < 0 ? undefined : arg.slice(equals + 1);
+    if (!known.includes(name)) {
+      if (options.freeText) fail(`unknown option --${name}; to pass text that starts with --, put -- before the text`);
+      fail(`unknown option --${name}\n\n${USAGE}`);
+    }
     const value = BOOLEAN_FLAGS.has(name) ? "true" : (inline ?? args[++i]);
     if (value === undefined) fail(`--${name} needs a value`);
     values.set(name, [...(values.get(name) ?? []), value]);
   }
   return { values, rest };
+}
+
+/** Fails if a command that takes no arguments (only options) was given some. */
+export function noArguments(flags: Flags, command: string): void {
+  if (flags.rest.length > 0) fail(`spectraweaver ${command} takes no argument "${flags.rest[0]}" (\`spectraweaver help\` lists the options)`);
+}
+
+/** Whether -h or --help comes before any "--": the person asks how to use the command. */
+export function asksForHelp(args: string[]): boolean {
+  const end = args.indexOf("--");
+  return (end < 0 ? args : args.slice(0, end)).some((arg) => arg === "-h" || arg === "--help");
 }
 
 export function flag(flags: Flags, name: string): string | undefined {

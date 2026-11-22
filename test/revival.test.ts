@@ -202,3 +202,19 @@ test("recent conversations no terminal is on can be resumed", async () => {
   const flags = messages.findLast((message) => message.t === "conversations");
   expect(flags).toMatchObject({ flags: { claude: "--dangerously-skip-permissions --model opus", codex: "--yolo -m gpt-5" } });
 }, 20_000);
+
+test("an agent that quits is no longer restored; its terminal still is, in its directory", async () => {
+  const session = await createSession({ cmd: "claude", cwd: project });
+  await until(() => meta().sessions[session.id]?.revival?.agent?.conversation !== undefined, "the conversation to be noted");
+  // Ctrl+C twice quits it; its shell stays.
+  send({ t: "input", session: session.id, data: "\x03" });
+  await Bun.sleep(50);
+  send({ t: "input", session: session.id, data: "\x03" });
+  // Forgotten once two notes in a row have seen it gone (one could be a reboot in progress).
+  await until(() => {
+    const revival = meta().sessions[session.id]?.revival;
+    return revival !== undefined && revival.agent === undefined;
+  }, "the agent to be forgotten");
+  expect(meta().sessions[session.id]!.revival!.cwd).toBe(project);
+  send({ t: "close", session: session.id });
+}, 20_000);

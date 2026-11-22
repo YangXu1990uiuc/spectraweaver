@@ -15,6 +15,7 @@ import {
   FrameDecoder,
   type HelloResult,
   KIND_JSON,
+  PROTOCOL_VERSION,
 } from "./common/protocol.ts";
 
 export interface ServerState {
@@ -29,6 +30,7 @@ export interface ServerState {
  * the answer comes they have been carried out.
  */
 export function daemonCall<T>(paths: Paths, request: DaemonRequest, before: DaemonRequest[] = []): Promise<T> {
+  if (paths.socketProblem) return Promise.reject(new Error(paths.socketProblem));
   return new Promise((resolve, reject) => {
     let socket: { end(): void } | null = null;
     let settled = false;
@@ -64,9 +66,9 @@ export function daemonCall<T>(paths: Paths, request: DaemonRequest, before: Daem
 }
 
 export async function daemonHello(paths: Paths): Promise<HelloResult | null> {
-  if (!existsSync(paths.daemonSocket)) return null;
+  if (paths.socketProblem || !existsSync(paths.daemonSocket)) return null;
   try {
-    return await daemonCall<HelloResult>(paths, { op: "hello", protocol: 1, client: "spectraweaver-cli" });
+    return await daemonCall<HelloResult>(paths, { op: "hello", protocol: PROTOCOL_VERSION, client: "spectraweaver-cli" });
   } catch {
     return null;
   }

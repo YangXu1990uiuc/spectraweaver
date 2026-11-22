@@ -50,6 +50,8 @@ const HEAD_MAX = 2 * 1024 * 1024;
 const TAIL_BYTES = 256 * 1024;
 const LABEL_MAX = 160;
 const LIST_TTL_MS = 10_000;
+/** How long a conversation not found is taken as absent. */
+const MISS_TTL_MS = 10_000;
 
 interface Head {
   cwd: string;
@@ -62,6 +64,10 @@ export class Conversations {
   private heads = new Map<string, Head | null>();
   private labels = new Map<string, { mtimeMs: number; label: string }>();
   private listed: { at: number; files: ConversationFile[] } | null = null;
+  /** Where each conversation found so far lives, so polling it does not list every file again. */
+  private paths = new Map<string, ConversationFile>();
+  /** Conversations looked for and not found, and when: not looked for again for a while. */
+  private misses = new Map<string, number>();
 
   constructor(private readonly dirs: AgentDirs) {}
 
@@ -97,12 +103,16 @@ export class Conversations {
     }
     files.sort((a, b) => b.mtimeMs - a.mtimeMs);
     this.listed = { at: Date.now(), files };
+    // What is known of files that are gone goes with them.
+    const present = new Set(files.map((file) => file.path));
+    for (const cache of [this.heads, this.labels]) for (const path of cache.keys()) if (!present.has(path)) cache.delete(path);
     return files;
   }
 
   /** Forgets the file list, so the next call reads the directories again. */
   refresh(): void {
     this.listed = null;
+    this.misses.clear();
   }
 
   /** Conversations written to since `since` that a person started, newest first. */
@@ -117,14 +127,40 @@ export class Conversations {
     return found;
   }
 
-  /** A conversation's file; a new one is looked for again if the list is more than a second old. */
+  /**
+   * A conversation's file. One found before is just looked at again; one not in the list is
+   * looked for again if the list is more than a second old, and one not found at all is not
+   * looked for again for MISS_TTL_MS (an agent keeping its files elsewhere would otherwise have
+   * every file listed on every poll).
+   */
   find(agent: AgentName, id: string): ConversationFile | undefined {
     const lower = id.toLowerCase();
+    const key = `${agent}:${lower}`;
+    const known = this.paths.get(key);
+    if (known) {
+      try {
+        const updated = { ...known, mtimeMs: statSync(known.path).mtimeMs };
+        this.paths.set(key, updated);
+        return updated;
+      } catch {
+        this.paths.delete(key); // moved or removed: look for it again
+      }
+    }
+    const missed = this.misses.get(key);
+    if (missed !== undefined && Date.now() - missed < MISS_TTL_MS) return undefined;
     const lookup = () => this.files().find((file) => file.agent === agent && file.id === lower);
-    const found = lookup();
-    if (found || !this.listed || Date.now() - this.listed.at < 1000) return found;
-    this.refresh();
-    return lookup();
+    let found = lookup();
+    if (!found && this.listed && Date.now() - this.listed.at >= 1000) {
+      this.refresh();
+      found = lookup();
+    }
+    if (found) {
+      this.paths.set(key, found);
+      this.misses.delete(key);
+    } else {
+      this.misses.set(key, Date.now());
+    }
+    return found;
   }
 
   /** The directory a conversation was started in; null if its file does not say. */
