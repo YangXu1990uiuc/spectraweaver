@@ -10,7 +10,9 @@ import { loadInstance } from "../common/config.ts";
 import { ensurePrivateDir, type Paths } from "../common/paths.ts";
 import {
   type AgentStatus,
+  type Board,
   type ClientMessage,
+  type Frame,
   type DaemonEvent,
   type LostSession,
   type ScreenText,
@@ -19,6 +21,7 @@ import {
   type SessionView,
   type Snapshot,
   TAB_COLORS,
+  type TabView,
 } from "../common/protocol.ts";
 import { VERSION } from "../common/version.ts";
 import indexPage from "../web/index.html";
@@ -34,6 +37,7 @@ import {
   validatePassword,
 } from "./auth.ts";
 import { agentNamed, detectAgent, resumeCommand, shellQuote } from "./agents.ts";
+import { BoardError, parseBoard } from "./board.ts";
 import { type AgentDirs, agentDirs, Conversations } from "./conversations.ts";
 import { type Control, type CreateRequest, controlRoutes } from "./control-api.ts";
 import { DaemonClient } from "./daemon-client.ts";
@@ -126,6 +130,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
 
   /** What each terminal's coding agent is doing, for terminals that run one. */
   const statuses = new Map<string, AgentStatus>();
+  /** Whether each terminal's shell waits at its prompt, as last looked at. */
+  const prompts = new Map<string, boolean>();
 
   const view = (session: SessionInfo): SessionView => ({
     ...session,
@@ -134,6 +140,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     color: meta.colorOf(session.id, sessions.keys()),
     frame: meta.frameOf(session.id),
     agent: statuses.get(session.id),
+    hidden: meta.hiddenOf(session.id) || undefined,
+    atPrompt: prompts.get(session.id),
   });
   const dirs = options.agentDirs ?? agentDirs();
   const conversations = new Conversations(dirs);
@@ -167,6 +175,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
           .then((list) => {
             sessions.clear();
             statuses.clear();
+            prompts.clear();
             for (const session of list) sessions.set(session.id, session);
             // Daemons older than the instance id are told apart by pid.
             meta.reconcile(new Set(sessions.keys()), hello.instance ?? `pid ${hello.pid}`);
@@ -221,6 +230,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         // Its program ended: there is nothing left to restore.
         meta.setRevival(event.session, undefined);
         statuses.delete(event.session);
+        prompts.delete(event.session);
         broadcastSession(event.session);
         return;
       }
@@ -228,6 +238,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         sessions.delete(event.session);
         fans.delete(event.session);
         statuses.delete(event.session);
+        prompts.delete(event.session);
         meta.forget(event.session);
         for (const client of clients) client.data.subs.delete(event.session);
         broadcast({ t: "removed", session: event.session });
@@ -397,6 +408,18 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         if (sessions.has(id) && meta.setSessionFrame(id, message.frame)) broadcastSession(id);
         return;
       }
+      case "session-hidden": {
+        const id = String(message.session);
+        if (!sessions.has(id)) return;
+        meta.setHidden(id, message.hidden === true);
+        broadcastSession(id);
+        return;
+      }
+      case "board-window":
+        if (meta.setBoardWindow(String(message.tab), { open: message.open, frame: message.frame, direction: message.direction })) {
+          broadcastTabs();
+        }
+        return;
       case "tab-create":
         if (
           meta.createTab({
@@ -603,9 +626,17 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
               : null;
             status = statusReader.status(agent, running.pid, conversation, screen);
           }
-          if (!sessions.has(session.id) || JSON.stringify(status) === JSON.stringify(statuses.get(session.id))) return;
+          if (!sessions.has(session.id)) return;
+          const previous = statuses.get(session.id);
+          // How long it has been working, idle or stopped: from the first look that saw it so.
+          if (status) status.since = previous?.activity === status.activity ? previous.since : Date.now();
+          const atPrompt = running ? running.isShell : undefined;
+          const promptChanged = prompts.get(session.id) !== atPrompt;
+          if (!promptChanged && JSON.stringify(status) === JSON.stringify(previous)) return;
           if (status) statuses.set(session.id, status);
           else statuses.delete(session.id);
+          if (atPrompt === undefined) prompts.delete(session.id);
+          else prompts.set(session.id, atPrompt);
           broadcastSession(session.id);
         }),
       );
@@ -621,11 +652,18 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
 
   // ---- the command line's interface ------------------------------------------------------
 
+  /** A tab by id or by name, whatever its case. */
+  function findTab(nameOrId: string): TabView | undefined {
+    const name = nameOrId.replace(/\s+/g, " ").trim();
+    const tabs = meta.tabs();
+    return tabs.find((tab) => tab.id === name) ?? tabs.find((tab) => tab.name.toLowerCase() === name.toLowerCase());
+  }
+
   /** A tab by id or name; a name no tab has makes a new tab. */
   function tabFor(nameOrId: string): string {
     const name = nameOrId.replace(/\s+/g, " ").trim();
     const tabs = meta.tabs();
-    const found = tabs.find((tab) => tab.id === name) ?? tabs.find((tab) => tab.name.toLowerCase() === name.toLowerCase());
+    const found = findTab(name);
     if (found) return found.id;
     // Not red, which marks a terminal that needs someone, nor grey: a colour no tab has yet, if one is left.
     const colors = TAB_COLORS.filter((candidate) => candidate !== "#f14c4c" && candidate !== "#8b8b8b");
@@ -660,6 +698,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
             // Daemons older than the tab tag don't echo it.
             if (tab && meta.tabOf(created.id) !== tab) meta.setSessionTab(created.id, tab, sessions.keys());
             if (request.banner) meta.setBanner(created.id, request.banner.slice(0, 200));
+            // A tab with a board shows the board and its lead; the workers wait in the taskbar.
+            if (tab && meta.board(tab) && !request.show) meta.setHidden(created.id, true);
             broadcastSession(created.id);
             resolve(view(sessions.get(created.id) ?? created));
           },
@@ -670,10 +710,72 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       if (!session) return null;
       if (patch.banner !== undefined) meta.setBanner(id, patch.banner.slice(0, 200));
       if (patch.tab?.trim()) meta.setSessionTab(id, tabFor(patch.tab), sessions.keys());
+      if (patch.hidden !== undefined) {
+        meta.setHidden(id, patch.hidden);
+        if (!patch.hidden) raise(id);
+      }
       broadcastSession(id);
       return view(session);
     },
+    board: (name) => findTab(name) ?? null,
+    setBoard: (name, input, lead) => {
+      // Checked before the tab is looked up, so a board with mistakes makes no tab.
+      const board = parseBoard(input, Date.now(), lead && sessions.has(lead) ? lead : undefined);
+      const tab = tabFor(name);
+      if (meta.setBoard(tab, board)) layOutForBoard(tab, board);
+      broadcastTabs();
+      const warnings = board.tasks.flatMap((task) =>
+        task.session && !sessions.has(task.session)
+          ? [`task "${task.id}": there is no terminal ${task.session} (\`spectraweaver ls\` lists them)`]
+          : [],
+      );
+      return { tab: meta.tabs().find((candidate) => candidate.id === tab)!, warnings };
+    },
+    clearBoard: (name) => {
+      const tab = findTab(name);
+      if (!tab) return null;
+      if (meta.clearBoard(tab.id)) broadcastTabs();
+      return meta.tabs().find((candidate) => candidate.id === tab.id) ?? null;
+    },
   };
+
+  /** The highest window in a tab: its terminals' and its board's. */
+  function topOfTab(tab: string): number {
+    const frames: Frame[] = [];
+    for (const id of sessions.keys()) {
+      const frame = meta.tabOf(id) === tab ? meta.frameOf(id) : undefined;
+      if (frame) frames.push(frame);
+    }
+    const board = meta.tabs().find((candidate) => candidate.id === tab)?.boardWindow?.frame;
+    if (board) frames.push(board);
+    return frames.reduce((top, frame) => Math.max(top, frame.z), 0);
+  }
+
+  /** Brings a terminal's window in front of the others in its tab, if it has a place yet. */
+  function raise(id: string): void {
+    const frame = meta.frameOf(id);
+    if (frame) meta.setSessionFrame(id, { ...frame, z: topOfTab(meta.tabOf(id)) + 1 });
+  }
+
+  /**
+   * A tab's first board: the board takes the left of the tab and the terminal that pushed it the
+   * right, in front; the terminals the board assigns tasks to are put away in the taskbar.
+   */
+  function layOutForBoard(tab: string, board: Board): void {
+    const top = topOfTab(tab);
+    meta.setBoardWindow(tab, { open: true, frame: { x: 0, y: 0, w: 0.6, h: 1, z: top + 1 } });
+    for (const task of board.tasks) {
+      if (task.session && task.session !== board.lead && sessions.has(task.session) && meta.tabOf(task.session) === tab) {
+        meta.setHidden(task.session, true);
+        broadcastSession(task.session);
+      }
+    }
+    if (board.lead && meta.tabOf(board.lead) === tab) {
+      meta.setSessionFrame(board.lead, { x: 0.6, y: 0, w: 0.4, h: 1, z: top + 2 });
+      meta.setHidden(board.lead, false);
+      broadcastSession(board.lead);
+    }
+  }
 
   const isAuthed = (request: Request) => {
     const value = readCookie(request, cookie);

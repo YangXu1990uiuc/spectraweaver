@@ -115,6 +115,10 @@ export interface SessionView extends SessionInfo {
   frame?: Frame;
   /** The coding agent running in it and what it is doing; absent when none runs. */
   agent?: AgentStatus;
+  /** Its window is put away in the tab's taskbar (the "—" button); it keeps running. */
+  hidden?: boolean;
+  /** Its shell waits at a prompt: no program runs in it. Absent when unknown. */
+  atPrompt?: boolean;
 }
 
 /**
@@ -135,6 +139,8 @@ export interface AgentStatus {
   detail?: string;
   /** Something wrong it works on despite ("cyber flag": rerouted to another model); shown like a stop. */
   warning?: string;
+  /** Since when it has been doing this (ms since the epoch), as far as the server has watched. */
+  since?: number;
 }
 
 /**
@@ -212,6 +218,42 @@ export interface TabView {
   color: string;
   /** Tiles per screen in matrix order, "rowsxcols": "2x3" is 2 rows of 3 tiles. */
   grid: string;
+  /** The task board a coordinating agent keeps for this tab (`spectraweaver board set`). */
+  board?: Board;
+  /**
+   * The board's window: where it sits, whether it is open or put away in the taskbar, and which
+   * way its graph runs (absent: whichever way fits the window better).
+   */
+  boardWindow?: { open: boolean; frame?: Frame; direction?: BoardDirection };
+}
+
+/** Which way a board's graph runs: "down", layers as rows; "right", layers as columns. */
+export type BoardDirection = "down" | "right";
+
+/** What the agent coordinating a tab says about one task; SpectraWeaver only shows it. */
+export type TaskStatus = "todo" | "wip" | "done" | "blocked";
+export const TASK_STATUSES: readonly TaskStatus[] = ["todo", "wip", "done", "blocked"];
+
+export interface BoardTask {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  /** Tasks this one waits for. */
+  after?: string[];
+  /** The terminal working on it, whose live state the board shows. */
+  session?: string;
+  note?: string;
+  /** An http(s) link: a pull request, the task's folder. */
+  link?: string;
+}
+
+export interface Board {
+  title?: string;
+  tasks: BoardTask[];
+  /** When it was last pushed, in ms since the epoch. */
+  updatedAt: number;
+  /** The terminal it was pushed from: the coordinating agent's own. */
+  lead?: string;
 }
 
 export const TAB_COLORS = [
@@ -247,6 +289,10 @@ export type ClientMessage =
   | { t: "session-move"; session: string; tab: string }
   /** Places or restacks a terminal's window; the server checks it with normalizeFrame. */
   | { t: "session-frame"; session: string; frame: Frame }
+  /** Puts a terminal's window away in the taskbar, or brings it back. */
+  | { t: "session-hidden"; session: string; hidden: boolean }
+  /** Opens, puts away, places or restacks a tab's board window, or sets which way its graph runs. */
+  | { t: "board-window"; tab: string; open?: boolean; frame?: Frame; direction?: BoardDirection | "auto" }
   | { t: "tab-create"; id: string; name: string; color: string; grid: string }
   | { t: "tab-update"; id: string; name?: string; color?: string; grid?: string }
   | { t: "tab-delete"; id: string }

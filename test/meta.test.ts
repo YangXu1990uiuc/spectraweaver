@@ -166,3 +166,42 @@ test("revival notes are written only when they change", async () => {
   meta.setRevival("a", undefined); // its program exited
   expect(meta.revival("a")).toBeUndefined();
 });
+
+test("a tab's board, its window, and windows put away are kept", () => {
+  const { meta, file } = store();
+  const tab = meta.tabs()[0]!.id;
+  const board = { tasks: [{ id: "T1", title: "x", status: "todo" as const }], updatedAt: 1 };
+  expect(meta.setBoard(tab, board)).toBe(true); // the first board opens its window
+  expect(meta.setBoard(tab, { ...board, updatedAt: 2 })).toBe(false);
+  expect(meta.tabs()[0]!.boardWindow).toEqual({ open: true });
+  expect(meta.setBoardWindow(tab, { frame: { x: 0, y: 0, w: 0.6, h: 1, z: 3 } })).toBe(true);
+  expect(meta.setBoardWindow(tab, { frame: "nonsense" })).toBe(false);
+  expect(meta.setBoardWindow(tab, { direction: "right" })).toBe(true);
+  expect(meta.setBoardWindow(tab, { direction: "sideways" })).toBe(false);
+  meta.setHidden("s1", true);
+  meta.flush();
+
+  const again = new MetaStore(file);
+  stores.push(again);
+  expect(again.board(tab)?.updatedAt).toBe(2);
+  expect(again.tabs()[0]!.boardWindow).toEqual({ open: true, frame: { x: 0, y: 0, w: 0.6, h: 1, z: 3 }, direction: "right" });
+  expect(again.setBoardWindow(tab, { direction: "auto" })).toBe(true);
+  expect(again.tabs()[0]!.boardWindow?.direction).toBeUndefined();
+  expect(again.hiddenOf("s1")).toBe(true);
+  // A window moved to another tab comes out of the taskbar there.
+  expect(again.createTab({ id: "bbbbbbbb", name: "other", color: "#2ea043", grid: "2x2" })).toBe(true);
+  again.setSessionTab("s1", "bbbbbbbb");
+  expect(again.hiddenOf("s1")).toBe(false);
+  expect(again.clearBoard(tab)).toBe(true);
+  expect(again.board(tab)).toBeUndefined();
+  expect(again.tabs()[0]!.boardWindow?.open).toBe(false);
+});
+
+test("a board that is not well formed is dropped when read, not trusted", () => {
+  const { meta } = store({
+    version: 2,
+    sessions: {},
+    tabs: [{ id: "aaaaaaaa", name: "x", color: "#2ea043", grid: "2x2", board: { tasks: "nope" }, boardWindow: { open: "yes" } }],
+  });
+  expect(meta.tabs()[0]).toEqual({ id: "aaaaaaaa", name: "x", color: "#2ea043", grid: "2x2" });
+});

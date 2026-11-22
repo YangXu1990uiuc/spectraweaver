@@ -18,6 +18,8 @@ export interface TabStripHandlers {
   move(id: string, index: number): void;
   openInWindow(id: string): void;
   moveSession(sessionId: string, tabId: string): void;
+  /** Opens the tab's task board window (an empty one says how to get a board). */
+  showBoard(id: string): void;
 }
 
 interface TabItem {
@@ -236,6 +238,7 @@ export class TabStrip {
     const menu = el("div", { class: "menu", role: "menu" }, [
       item("Rename", () => this.startRename(tab.id)),
       swatches,
+      item("Show board", () => this.handlers.showBoard(tab.id)),
       item("Open in new window", () => this.handlers.openInWindow(tab.id)),
       item("Delete tab…", () => this.handlers.remove(tab.id), this.state.tabs.length <= 1),
     ]);

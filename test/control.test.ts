@@ -66,9 +66,13 @@ afterAll(async () => {
   rmSync(bin, { recursive: true, force: true });
 });
 
-async function run(args: string[], stdin?: string): Promise<{ code: number; out: string; err: string }> {
+async function run(
+  args: string[],
+  stdin?: string,
+  extraEnv: Record<string, string> = {},
+): Promise<{ code: number; out: string; err: string }> {
   const child = Bun.spawn(["bun", CLI, ...args], {
-    env,
+    env: { ...env, ...extraEnv },
     stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
     stdout: "pipe",
     stderr: "pipe",
@@ -143,7 +147,13 @@ test("terminals opened from the command line land in their tab, and their agents
   await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "waiting", reason: "needs you" }), "claude waiting");
   await cli("send", id, "/error", "overloaded");
   const stopped = await eventually(() => agentOf(id), (agent) => agent?.activity === "stopped", "claude stopped");
-  expect(stopped).toEqual({ name: "claude", activity: "stopped", reason: "at capacity", detail: "API Error: fake overloaded" });
+  expect(stopped).toEqual({
+    name: "claude",
+    activity: "stopped",
+    reason: "at capacity",
+    detail: "API Error: fake overloaded",
+    since: expect.any(Number),
+  });
   expect(await cli("ls")).toContain("claude stopped: at capacity");
   await cli("send", id, "carry on");
   await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "idle" }), "claude idle again");
@@ -179,6 +189,64 @@ test("Codex's approval prompts, warnings and errors show", async () => {
     "codex stopped",
   );
   await cli("close", id);
+}, 60_000);
+
+test("a coordinating agent's board: pushed from its terminal, with its workers in the taskbar", async () => {
+  const lead = (await cli("new", "--tab", "Project", "--banner", "lead", "--cwd", project)).trim();
+  const worker = (await cli("new", "--tab", "Project", "--banner", "w1", "--cwd", project)).trim();
+  // As the lead runs them: from its own terminal, so the tab is its tab.
+  const asLead = { SPECTRAWEAVER_SESSION_ID: lead };
+  const board = {
+    title: "Login refactor",
+    tasks: [
+      { id: "T1", title: "Map the flow", status: "done" },
+      { id: "T2", title: "Refresh API", status: "wip", after: ["T1"], session: worker },
+      { id: "T3", title: "Login page", status: "blocked", after: ["T2"], note: "waits for the API" },
+      { id: "T4", title: "Migration", status: "wip", after: ["T1"], session: "ffffffff" },
+    ],
+  };
+  const set = await run(["board", "set", "-"], JSON.stringify(board), asLead);
+  expect(set.code).toBe(0);
+  expect(set.out.trim()).toBe("board of “Project”: 4 tasks: 1 done, 2 wip, 1 blocked");
+  expect(set.err).toContain('warning: task "T4": there is no terminal ffffffff');
+
+  const listed = await listing();
+  const tab = listed.tabs.find((candidate) => candidate.name === "Project")!;
+  expect(tab.board).toMatchObject({ title: "Login refactor", lead, tasks: board.tasks });
+  // The first board: the board on the left, its lead on the right, the workers put away.
+  expect(tab.boardWindow).toEqual({ open: true, frame: { x: 0, y: 0, w: 0.6, h: 1, z: expect.any(Number) } });
+  expect((await session(lead))?.frame).toMatchObject({ x: 0.6, y: 0, w: 0.4, h: 1 });
+  expect((await session(lead))?.hidden).toBeUndefined();
+  expect((await session(worker))?.hidden).toBe(true);
+  // A shell waiting at its prompt says so, for the board to mark a task no one works on.
+  await eventually(() => session(worker), (found) => found?.atPrompt === true, "the worker's shell at its prompt");
+
+  // New terminals from the lead land in its tab, put away unless shown.
+  const quiet = (await run(["new", "--banner", "w2"], undefined, asLead)).out.trim();
+  const shown = (await run(["new", "--banner", "w3", "--show"], undefined, asLead)).out.trim();
+  expect((await session(quiet))?.tab).toBe(tab.id);
+  expect((await session(quiet))?.hidden).toBe(true);
+  expect((await session(shown))?.hidden).toBeUndefined();
+  await cli("show", quiet);
+  expect((await session(quiet))?.hidden).toBeUndefined();
+  await cli("hide", quiet);
+  expect((await session(quiet))?.hidden).toBe(true);
+
+  // Mistakes are refused with what to write instead, and the board stays as it was.
+  const wrong = await run(["board", "set", "-"], JSON.stringify([{ id: "T9", status: "review" }]), asLead);
+  expect(wrong.code).toBe(1);
+  expect(wrong.err).toContain('the board was not set: task "T9": "status" must be one of todo, wip, done, blocked');
+  const shownBoard = JSON.parse(await cli("board", "show", "--tab", "project")) as { tasks: unknown[] };
+  expect(shownBoard.tasks).toHaveLength(4);
+  const nowhere = await run(["board", "show"]);
+  expect(nowhere.code).toBe(1);
+  expect(nowhere.err).toContain("say which tab");
+
+  expect((await cli("board", "clear", "--tab", "Project")).trim()).toBe("“Project” has no board now");
+  const cleared = (await listing()).tabs.find((candidate) => candidate.id === tab.id)!;
+  expect(cleared.board).toBeUndefined();
+  expect(cleared.boardWindow?.open).toBe(false);
+  for (const id of [lead, worker, quiet, shown]) await cli("close", id);
 }, 60_000);
 
 test("commands say plainly what is wrong", async () => {

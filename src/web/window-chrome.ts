@@ -12,8 +12,8 @@ export interface WindowChromeOptions {
   root: HTMLElement;
   /** Dragging it moves the window. Buttons and the ⠿ grip (drag-and-drop onto a tab) keep their jobs. */
   header: HTMLElement;
-  /** The banner input: a press that does not become a drag focuses it for editing. */
-  banner: HTMLInputElement;
+  /** The banner input, if the window has one: a press that does not become a drag focuses it for editing. */
+  banner?: HTMLInputElement;
   /** The terminal area, to measure what the window adds around it. */
   body: HTMLElement;
   /** The element the windows are positioned in; the resize outline is drawn there. */
@@ -129,7 +129,7 @@ export class WindowChrome {
     const workspace = this.workspaceArea();
     if (!frame || !workspace) return;
     const { header, banner, root } = this.options;
-    const onBanner = target === banner || banner.contains(target);
+    const onBanner = banner !== undefined && (target === banner || banner.contains(target));
     // No focus change or text selection on the press; a click on the banner edits it on release.
     event.preventDefault();
     this.dragging = true;
@@ -168,8 +168,8 @@ export class WindowChrome {
           this.options.restore();
         }
       } else if (commit && onBanner) {
-        banner.focus();
-        banner.select();
+        banner!.focus();
+        banner!.select();
       }
     };
     const up = (e: PointerEvent) => {

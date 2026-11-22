@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { writeFileAtomic } from "../common/files.ts";
 import type { Revival } from "./revival.ts";
 import {
+  type Board,
   type Frame,
   GRID_PATTERN,
   normalizeFrame,
@@ -20,6 +21,8 @@ interface SessionMeta {
   color?: string;
   /** The session's window in its tab; absent until the user places it. */
   frame?: Frame;
+  /** Its window is put away in the tab's taskbar. */
+  hidden?: true;
   /** What would bring the terminal back, noted while it runs. */
   revival?: Revival;
   /** The terminal was lost when its daemon stopped, and waits to be restored or forgotten. */
@@ -53,7 +56,7 @@ export class MetaStore {
     if (!existsSync(file)) return;
     try {
       const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<MetaFile>;
-      const tabs = (parsed.tabs ?? []).filter((tab) => TAB_ID.test(tab.id));
+      const tabs = (parsed.tabs ?? []).filter((tab) => TAB_ID.test(tab.id)).map(withSaneBoard);
       this.data = {
         version: 2,
         tabs: tabs.length > 0 ? tabs : [{ ...DEFAULT_TAB }],
@@ -141,7 +144,13 @@ export class MetaStore {
   adopt(sessionId: string, lostId: string): void {
     const lost = this.data.sessions[lostId];
     if (!lost) return;
-    this.patchSession(sessionId, { tab: lost.tab, color: lost.color, banner: lost.banner, frame: lost.frame });
+    this.patchSession(sessionId, {
+      tab: lost.tab,
+      color: lost.color,
+      banner: lost.banner,
+      frame: lost.frame,
+      hidden: lost.hidden,
+    });
     this.forget(lostId);
   }
 
@@ -158,6 +167,77 @@ export class MetaStore {
 
   frameOf(sessionId: string): Frame | undefined {
     return this.data.sessions[sessionId]?.frame;
+  }
+
+  hiddenOf(sessionId: string): boolean {
+    return this.data.sessions[sessionId]?.hidden === true;
+  }
+
+  /** Puts a session's window away in the taskbar, or brings it back. */
+  setHidden(sessionId: string, hidden: boolean): void {
+    if (this.hiddenOf(sessionId) === hidden) return;
+    this.patchSession(sessionId, { hidden: hidden ? true : undefined });
+  }
+
+  board(tabId: string): Board | undefined {
+    return this.data.tabs.find((tab) => tab.id === tabId)?.board;
+  }
+
+  /**
+   * Stores a tab's board (checked by parseBoard). The first board a tab gets opens its window;
+   * true then, so the server can lay the tab out for it.
+   */
+  setBoard(tabId: string, board: Board): boolean {
+    const tab = this.data.tabs.find((candidate) => candidate.id === tabId);
+    if (!tab) return false;
+    const first = tab.board === undefined;
+    tab.board = board;
+    if (first) tab.boardWindow = { ...tab.boardWindow, open: true };
+    this.scheduleSave();
+    return first;
+  }
+
+  /** Removes a tab's board and closes its window. */
+  clearBoard(tabId: string): boolean {
+    const tab = this.data.tabs.find((candidate) => candidate.id === tabId);
+    if (!tab?.board) return false;
+    delete tab.board;
+    if (tab.boardWindow) tab.boardWindow = { ...tab.boardWindow, open: false };
+    this.scheduleSave();
+    return true;
+  }
+
+  /**
+   * Opens or puts away a tab's board window, places it, or sets which way its graph runs ("auto":
+   * whichever fits); false if nothing valid was asked.
+   */
+  setBoardWindow(tabId: string, patch: { open?: unknown; frame?: unknown; direction?: unknown }): boolean {
+    const tab = this.data.tabs.find((candidate) => candidate.id === tabId);
+    if (!tab) return false;
+    const next = { ...(tab.boardWindow ?? { open: false }) };
+    let changed = false;
+    if (typeof patch.open === "boolean") {
+      next.open = patch.open;
+      changed = true;
+    }
+    if (patch.frame !== undefined) {
+      const frame = normalizeFrame(patch.frame);
+      if (frame) {
+        next.frame = frame;
+        changed = true;
+      }
+    }
+    if (patch.direction === "down" || patch.direction === "right") {
+      next.direction = patch.direction;
+      changed = true;
+    } else if (patch.direction === "auto") {
+      delete next.direction;
+      changed = true;
+    }
+    if (!changed) return false;
+    tab.boardWindow = next;
+    this.scheduleSave();
+    return true;
   }
 
   /** Places a session's window; false if the frame is malformed (it is checked, not trusted). */
@@ -244,10 +324,13 @@ export class MetaStore {
     writeFileAtomic(this.file, JSON.stringify(this.data, null, 2));
   }
 
-  /** A session arriving in another tab has no window there yet; one already in the tab keeps its frame. */
+  /**
+   * A session arriving in another tab has no window there yet, and shows; one already in the tab
+   * keeps its frame.
+   */
   private placeInTab(sessionId: string, tabId: string): void {
     if (this.tabOf(sessionId) === tabId) return;
-    this.patchSession(sessionId, { tab: tabId, frame: undefined });
+    this.patchSession(sessionId, { tab: tabId, frame: undefined, hidden: undefined });
   }
 
   private keepColorDistinct(sessionId: string, liveIds: string[]): void {
@@ -282,6 +365,19 @@ export class MetaStore {
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => this.flush(), 100);
   }
+}
+
+/** A tab as read from meta.json, without a board or board window that is not well formed. */
+function withSaneBoard(tab: TabView): TabView {
+  const { board, boardWindow, ...rest } = tab;
+  const sane: TabView = rest;
+  if (board && Array.isArray(board.tasks) && typeof board.updatedAt === "number") sane.board = board;
+  if (boardWindow && typeof boardWindow.open === "boolean") {
+    const frame = boardWindow.frame && normalizeFrame(boardWindow.frame);
+    sane.boardWindow = frame ? { open: boardWindow.open, frame } : { open: boardWindow.open };
+    if (boardWindow.direction === "down" || boardWindow.direction === "right") sane.boardWindow.direction = boardWindow.direction;
+  }
+  return sane;
 }
 
 function cleanName(name: string): string {

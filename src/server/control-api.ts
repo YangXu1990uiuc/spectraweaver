@@ -9,6 +9,7 @@
 
 import type { SessionView, TabView } from "../common/protocol.ts";
 import { safeEqual } from "./auth.ts";
+import { BoardError } from "./board.ts";
 
 export interface CreateRequest {
   /** A tab's name (or id); a name no tab has makes a new tab. */
@@ -19,14 +20,29 @@ export interface CreateRequest {
   cmd?: string;
   cols: number;
   rows: number;
+  /** Show its window even in a tab with a board, where new terminals start put away in the taskbar. */
+  show?: boolean;
+}
+
+export interface BoardResult {
+  /** The tab, with its board. */
+  tab: TabView;
+  /** Things worth fixing that did not stop the board, such as a task naming a terminal that does not exist. */
+  warnings: string[];
 }
 
 export interface Control {
   sessions(): SessionView[];
   tabs(): TabView[];
   create(request: CreateRequest): Promise<SessionView>;
-  /** Changes a terminal's banner or tab; null if there is no such terminal. */
-  update(id: string, patch: { banner?: string; tab?: string }): SessionView | null;
+  /** Changes a terminal's banner or tab, or puts its window away; null if there is no such terminal. */
+  update(id: string, patch: { banner?: string; tab?: string; hidden?: boolean }): SessionView | null;
+  /** A tab, with its board if it has one; null if no tab has that name or id. */
+  board(tab: string): TabView | null;
+  /** Sets a tab's board (a name no tab has makes a tab); throws BoardError if the board is not valid. */
+  setBoard(tab: string, board: unknown, lead?: string): BoardResult;
+  /** Removes a tab's board; null if no tab has that name or id. */
+  clearBoard(tab: string): TabView | null;
 }
 
 const DEFAULT_SIZE = { cols: 120, rows: 36 };
@@ -45,6 +61,8 @@ export function controlRoutes(control: Control, token: () => string | null, host
   };
   const string = (value: unknown) => (typeof value === "string" ? value : undefined);
   const failed = (error: unknown) => new Response((error as Error).message, { status: 400 });
+  const tabParam = (request: Request) => new URL(request.url).searchParams.get("tab")?.trim() ?? "";
+  const noTab = (name: string) => new Response(`no tab named “${name}”`, { status: 404 });
 
   return {
     "/api/v1/sessions": {
@@ -61,6 +79,7 @@ export function controlRoutes(control: Control, token: () => string | null, host
             cmd: string(input.cmd),
             cols: typeof input.cols === "number" ? input.cols : DEFAULT_SIZE.cols,
             rows: typeof input.rows === "number" ? input.rows : DEFAULT_SIZE.rows,
+            show: input.show === true,
           });
           return Response.json({ session });
         } catch (error) {
@@ -73,8 +92,42 @@ export function controlRoutes(control: Control, token: () => string | null, host
         const refused = authorized(request);
         if (refused) return refused;
         const input = await body(request);
-        const session = control.update(request.params.id, { banner: string(input.banner), tab: string(input.tab) });
+        const session = control.update(request.params.id, {
+          banner: string(input.banner),
+          tab: string(input.tab),
+          hidden: typeof input.hidden === "boolean" ? input.hidden : undefined,
+        });
         return session ? Response.json({ session }) : new Response(`no such session: ${request.params.id}`, { status: 404 });
+      },
+    },
+    // The tab goes in the query (?tab=NAME), as names may hold any character.
+    "/api/v1/board": {
+      GET: (request: Request) => {
+        const refused = authorized(request);
+        if (refused) return refused;
+        const name = tabParam(request);
+        const tab = name ? control.board(name) : null;
+        return tab ? Response.json({ tab }) : noTab(name);
+      },
+      PUT: async (request: Request) => {
+        const refused = authorized(request);
+        if (refused) return refused;
+        const name = tabParam(request);
+        if (!name) return new Response("say which tab the board is for", { status: 400 });
+        const input = await body(request);
+        try {
+          return Response.json(control.setBoard(name, input.board, string(input.lead)));
+        } catch (error) {
+          if (error instanceof BoardError) return new Response(`the board was not set: ${error.message}`, { status: 400 });
+          throw error;
+        }
+      },
+      DELETE: (request: Request) => {
+        const refused = authorized(request);
+        if (refused) return refused;
+        const name = tabParam(request);
+        const tab = name ? control.clearBoard(name) : null;
+        return tab ? Response.json({ tab }) : noTab(name);
       },
     },
   };

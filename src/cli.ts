@@ -16,7 +16,8 @@ import { fail, FIRST_PORT, flag, parseFlags, USAGE } from "./cli-args.ts";
 import { daemonCall, daemonHello, isAlive, readServerState, type ServerState, serverUrl } from "./client.ts";
 import type { SessionInfo } from "./common/protocol.ts";
 import { VERSION } from "./common/version.ts";
-import { cmdBanner, cmdClose, cmdList, cmdNew, cmdRead, cmdSend } from "./control.ts";
+import { cmdBoard } from "./board-cli.ts";
+import { cmdBanner, cmdClose, cmdList, cmdNew, cmdRead, cmdSend, cmdShowHide } from "./control.ts";
 
 const PORT_SEARCH = 100;
 const DEFAULT_HOST = "127.0.0.1";
@@ -547,6 +548,15 @@ try {
       break;
     case "close":
       await cmdClose(args);
+      break;
+    case "show":
+      await cmdShowHide(args, false);
+      break;
+    case "hide":
+      await cmdShowHide(args, true);
+      break;
+    case "board":
+      await cmdBoard(args);
       break;
     case "config":
       await cmdConfig(args);

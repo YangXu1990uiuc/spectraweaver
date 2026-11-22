@@ -99,7 +99,12 @@ export function serverUrl(host: string, port: number): string {
  * Calls the server's interface for the command line (/api/v1/...). Null if no server runs;
  * throws with the server's message if it refuses.
  */
-export async function serverCall<T>(paths: Paths, method: "GET" | "POST", path: string, body?: unknown): Promise<T | null> {
+export async function serverCall<T>(
+  paths: Paths,
+  method: "GET" | "POST" | "PUT" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<T | null> {
   const server = readServerState(paths);
   if (!server) return null;
   let token: string;

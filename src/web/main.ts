@@ -5,6 +5,7 @@
 import "@xterm/xterm/css/xterm.css";
 import {
   type AgentStatus,
+  type BoardTask,
   type ClientMessage,
   decodeOutputPayload,
   type Frame,
@@ -14,6 +15,7 @@ import {
   TAB_COLORS,
   type TabView,
 } from "../common/protocol.ts";
+import { BoardWindow, boardAlarms, DEFAULT_BOARD_FRAME } from "./board-view.ts";
 import { adoptFormerSettings, el, type Grid, loadSetting, parseGrid, randomId, saveSetting } from "./dom.ts";
 import { detectPlatform } from "./keymap.ts";
 import { createSettingsDialog, ensureLogin } from "./login.ts";
@@ -122,6 +124,8 @@ const settingsButton = el("button", { class: "icon-btn settings-btn", title: "Se
 const notice = el("div", { class: "notice", hidden: "" });
 const grid = el("main", { class: "grid" });
 const empty = el("div", { class: "empty", hidden: "" });
+/** The tab's windows, put away or not: click one to bring it out, or to put away the one in front. */
+const taskbar = el("nav", { class: "taskbar", "aria-label": "Windows in this tab", hidden: "" });
 const toastBox = el("div", { class: "toast", hidden: "" });
 const favicon = el("link", { rel: "icon" });
 document.head.appendChild(favicon);
@@ -151,6 +155,11 @@ const tabStrip = new TabStrip({
   },
   move: (id, index) => send({ t: "tab-move", id, index }),
   openInWindow: (id) => window.open(`${location.pathname}#t=${id}`, "_blank"),
+  showBoard: (id) => {
+    showTab(id);
+    send({ t: "board-window", tab: id, open: true });
+    raiseBoard();
+  },
   moveSession: (sessionId, tabId) => send({ t: "session-move", session: sessionId, tab: tabId }),
 });
 
@@ -244,10 +253,74 @@ function raiseWindow(sessionId: string): void {
   if (!tile || !mine) return;
   const others: Frame[] = [];
   for (const other of tiles.values()) if (other !== tile && other.windowFrame) others.push(other.windowFrame);
+  if (board?.windowFrame) others.push(board.windowFrame);
   if (!others.some((frame) => frame.z >= mine.z)) return;
   const raised = { ...mine, z: topZ(others) + 1 };
   tile.setFrame(raised);
   send({ t: "session-frame", session: sessionId, frame: raised });
+}
+
+/** Brings the board's window in front of the terminals' windows. */
+function raiseBoard(): void {
+  const mine = board?.windowFrame;
+  const tab = currentView().tab;
+  if (!board || !mine || !tab) return;
+  const others = [...tiles.values()].flatMap((tile) => (tile.windowFrame ? [tile.windowFrame] : []));
+  if (!others.some((frame) => frame.z >= mine.z)) return;
+  const raised = { ...mine, z: topZ(others) + 1 };
+  board.setFrame(raised);
+  send({ t: "board-window", tab: tab.id, frame: raised });
+}
+
+/** The highest window of a tab: its terminals' and its board's. */
+function topOfTab(tabId: string): number {
+  const frames = [...sessions.values()].flatMap((session) => (session.tab === tabId && session.frame ? [session.frame] : []));
+  const boardFrame = tabs.find((tab) => tab.id === tabId)?.boardWindow?.frame;
+  if (boardFrame) frames.push(boardFrame);
+  return topZ(frames);
+}
+
+/**
+ * Shows a terminal's window, in front: out of the taskbar, in its own tab. One never placed pops
+ * up over the middle of the tab, as a window opened from the board does on a desktop.
+ */
+function showTerminal(sessionId: string): void {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    toast("That terminal is closed.");
+    return;
+  }
+  if (currentView().tab?.id !== session.tab || currentView().focus) showTab(session.tab);
+  const step = [...sessions.values()].filter((other) => other.tab === session.tab && !other.hidden).length % 6;
+  const frame = session.frame ?? { x: 0.3 + 0.025 * step, y: 0.06 + 0.035 * step, w: 0.46, h: 0.62, z: 0 };
+  send({ t: "session-frame", session: sessionId, frame: { ...frame, z: topOfTab(session.tab) + 1 } });
+  if (session.hidden) send({ t: "session-hidden", session: sessionId, hidden: false });
+}
+
+/** A task was double-clicked on the board. */
+function openTask(task: BoardTask): void {
+  if (!task.session) {
+    toast(`No terminal works on ${task.id}.`);
+    return;
+  }
+  showTerminal(task.session);
+}
+
+/** The board's window for the tab shown, while it is open. */
+let board: BoardWindow | null = null;
+let boardTab: string | null = null;
+
+function copyText(text: string): void {
+  navigator.clipboard
+    ?.writeText(text)
+    .then(() => toast("Copied."))
+    .catch(() => toast("Copying needs HTTPS or localhost; the text is selected, press Ctrl+C."));
+  if (!navigator.clipboard) toast("Copying needs HTTPS or localhost; the text is selected, press Ctrl+C.");
+}
+
+/** What the tabs' marks, the board and the taskbar show of a terminal; its title is not part of it. */
+function stateOf(session: SessionView): string {
+  return JSON.stringify([session.agent, session.exited, session.atPrompt, session.banner, session.color]);
 }
 
 function sameFrame(a: Frame | undefined, b: Frame | undefined): boolean {
@@ -323,7 +396,10 @@ function setStatus(): void {
 
 /** Browser-tab title and icon show the workspace, so several open windows are easy to tell apart. */
 function updateWindowIdentity(tab: TabView | null): void {
-  const waiting = [...sessions.values()].filter((session) => belled.has(session.id) || needsSomeone(session)).length;
+  const now = Date.now();
+  const waiting =
+    [...sessions.values()].filter((session) => belled.has(session.id) || needsSomeone(session)).length +
+    tabs.reduce((sum, candidate) => sum + boardAlarms(candidate, sessions, now).unshown, 0);
   document.title = `${waiting > 0 ? `(${waiting}) ` : ""}${tab ? `${tab.name} · ` : ""}SpectraWeaver`;
   const color = tab?.color ?? "#3794ff";
   const dot = waiting > 0 ? '<circle cx="12" cy="4" r="3.5" fill="#cca700" stroke="#1f1f1f" stroke-width="1"/>' : "";
@@ -347,6 +423,7 @@ class Tile {
   private readonly exitBadge: HTMLSpanElement;
   private readonly agentBadge: HTMLSpanElement;
   private readonly focusButton: HTMLButtonElement;
+  private readonly hideButton: HTMLButtonElement;
 
   constructor(session: SessionView) {
     this.session = session;
@@ -359,6 +436,7 @@ class Tile {
     this.focusButton = el("button", { class: "icon-btn", title: "Focus this terminal" }, ["⤢"]);
     const windowButton = el("button", { class: "icon-btn", title: "Open in a new window" }, ["↗"]);
     const closeButton = el("button", { class: "icon-btn", title: "Close terminal" }, ["✕"]);
+    this.hideButton = el("button", { class: "icon-btn", title: "Put away in the taskbar (it keeps running)" }, ["—"]);
     this.body = el("div", { class: "tile-body" });
     const header = el("div", { class: "tile-header" }, [
       grip,
@@ -368,6 +446,7 @@ class Tile {
       this.agentBadge,
       this.exitBadge,
       this.size,
+      this.hideButton,
       this.focusButton,
       windowButton,
       closeButton,
@@ -418,6 +497,7 @@ class Tile {
     windowButton.addEventListener("click", () => {
       window.open(`${location.pathname}#s=${this.session.id}`, "_blank");
     });
+    this.hideButton.addEventListener("click", () => send({ t: "session-hidden", session: this.session.id, hidden: true }));
     closeButton.addEventListener("click", () => {
       if (!this.session.exited && !confirm("Close this terminal? Its program will be terminated.")) return;
       send({ t: "close", session: this.session.id });
@@ -475,6 +555,8 @@ class Tile {
     }
     this.root.classList.toggle("window", frame !== null);
     this.chrome.setEnabled(frame !== null);
+    // Only a window can go to the taskbar; a focused terminal is shown alone.
+    this.hideButton.hidden = frame === null;
     this.view?.setResizable(this.resizable());
   }
 
@@ -555,26 +637,48 @@ function render(): void {
     saveSetting("lastTab", view.tab.id);
   }
 
-  const counts = new Map<string, number>();
-  const alerts = new Set<string>();
-  for (const session of sessions.values()) {
-    counts.set(session.tab, (counts.get(session.tab) ?? 0) + 1);
-    if (belled.has(session.id) || needsSomeone(session)) alerts.add(session.tab);
-  }
-  tabStrip.render({ tabs, activeId: view.tab?.id ?? null, counts, alerts });
-
   const ordered = [...sessions.values()].sort((a, b) => a.createdAt - b.createdAt);
+  // As windows, placed terminals sit where their frames say; the others take a free cell of the
+  // tab's grid, or cascade, worked out the same way in every browser. Windows put away in the
+  // taskbar are not shown (nor subscribed to) until they come out again.
+  const windowed = !view.focus; // focusing one terminal shows it alone, filling the page
   const visible = view.focus
     ? ordered.filter((session) => session.id === view.focus)
-    : ordered.filter((session) => session.tab === view.tab?.id);
+    : ordered.filter((session) => session.tab === view.tab?.id && !session.hidden);
   const visibleIds = new Set(visible.map((session) => session.id));
-  // As windows, placed terminals sit where their frames say; the others take a free cell of the
-  // tab's grid, or cascade, worked out the same way in every browser.
-  const windowed = !view.focus; // focusing one terminal shows it alone, filling the page
   grid.classList.toggle("windows", windowed);
   snapToggle.hidden = !windowed;
   const placed: Frame[] = windowed ? visible.flatMap((session) => (session.frame ? [session.frame] : [])) : [];
   let unplaced = 0;
+
+  // The board's window, when the tab has it open.
+  const boardOpen = windowed && view.tab?.boardWindow?.open === true;
+  if (board && (!boardOpen || boardTab !== view.tab?.id)) {
+    board.dispose();
+    board = null;
+    boardTab = null;
+  }
+  if (boardOpen && view.tab) {
+    const tabId = view.tab.id;
+    if (!board) {
+      board = new BoardWindow(view.tab, {
+        workspace: grid,
+        snap: () => snapBox.checked,
+        openTerminal: openTask,
+        showTerminal,
+        hide: () => send({ t: "board-window", tab: tabId, open: false }),
+        setDirection: (direction) => send({ t: "board-window", tab: tabId, direction }),
+        commit: (frame) => send({ t: "board-window", tab: tabId, frame }),
+        raise: () => raiseBoard(),
+        copy: copyText,
+      });
+      boardTab = tabId;
+      grid.appendChild(board.root);
+    }
+    const frame = view.tab.boardWindow?.frame ?? { ...DEFAULT_BOARD_FRAME, z: topZ(placed) + 1 };
+    board.setFrame(frame);
+    placed.push(frame);
+  }
 
   for (const [id, tile] of tiles) {
     if (!visibleIds.has(id)) {
@@ -607,17 +711,115 @@ function render(): void {
       }
     }
   });
+  if (board && grid.lastElementChild !== board.root) grid.appendChild(board.root);
 
-  empty.hidden = visible.length > 0;
+  const putAway = windowed && ordered.some((session) => session.tab === view.tab?.id && session.hidden);
+  empty.hidden = visible.length > 0 || board !== null || putAway;
   empty.textContent = view.focus
     ? "This terminal no longer exists."
     : lost.length > 0
       ? `${lost.length} terminal${lost.length === 1 ? " was" : "s were"} lost when the daemon stopped. Open them again with “↻ Restore”.`
       : "No terminals in this tab yet. Create one with “+ New terminal”, or drag one here onto the tab.";
   layoutGrid();
-  updateWindowIdentity(view.tab);
   updateRestoreButton();
+  renderStatus();
 }
+
+/**
+ * What follows the terminals' states: the tabs' marks and counts, the browser tab's title, the
+ * board and the taskbar. Cheap, so it runs on every change of a terminal.
+ */
+function renderStatus(): void {
+  const view = currentView();
+  const now = Date.now();
+  const counts = new Map<string, number>();
+  const alerts = new Set<string>();
+  for (const session of sessions.values()) {
+    counts.set(session.tab, (counts.get(session.tab) ?? 0) + 1);
+    if (belled.has(session.id) || needsSomeone(session)) alerts.add(session.tab);
+  }
+  for (const tab of tabs) if (boardAlarms(tab, sessions, now).unshown > 0) alerts.add(tab.id);
+  tabStrip.render({ tabs, activeId: view.tab?.id ?? null, counts, alerts });
+  if (board && view.tab) board.update(view.tab, sessions);
+  renderTaskbar(view.focus ? null : view.tab);
+  updateWindowIdentity(view.tab);
+}
+
+/** What a terminal's chip in the taskbar says, if it needs someone. */
+function alertOf(session: SessionView): { text: string; kind: string } | null {
+  const agent = session.agent;
+  if (agent && (agent.activity === "stopped" || agent.warning)) {
+    return { text: `⚠ ${agent.activity === "stopped" ? (agent.reason ?? "stopped") : agent.warning}`, kind: "stopped" };
+  }
+  if (agent?.activity === "waiting") return { text: agent.reason ?? "needs you", kind: "waiting" };
+  if (belled.has(session.id)) return { text: "●", kind: "bell" };
+  return null;
+}
+
+/**
+ * The taskbar: every window of the tab, the board first. A click brings a window out of the
+ * taskbar or to the front; on the window already in front, it puts it away. Shown once the tab
+ * has a board or a window put away.
+ */
+function renderTaskbar(tab: TabView | null): void {
+  const inTab = tab
+    ? [...sessions.values()].filter((session) => session.tab === tab.id).sort((a, b) => a.createdAt - b.createdAt)
+    : [];
+  const hasBoard = tab !== null && (tab.board !== undefined || tab.boardWindow?.open === true);
+  taskbar.hidden = !tab || (!hasBoard && !inTab.some((session) => session.hidden));
+  if (taskbar.hidden || !tab) {
+    taskbar.replaceChildren();
+    return;
+  }
+  const frames = [...tiles.values()].flatMap((tile) => (tile.windowFrame ? [tile.windowFrame] : []));
+  if (board?.windowFrame) frames.push(board.windowFrame);
+  const front = topZ(frames);
+  const chip = (label: string, color: string, open: boolean, inFront: boolean, alert: { text: string; kind: string } | null, click: () => void) => {
+    const button = el("button", { class: `task-chip${open ? " open" : ""}${inFront ? " front" : ""}`, title: label }, [
+      el("span", { class: "chip-swatch" }),
+      el("span", { class: "chip-label" }, [label]),
+    ]);
+    (button.firstChild as HTMLElement).style.background = `color-mix(in srgb, ${color} 50%, white)`;
+    if (alert) button.append(el("span", { class: `badge agent ${alert.kind}` }, [alert.text]));
+    button.setAttribute("aria-pressed", String(open));
+    button.addEventListener("click", click);
+    return button;
+  };
+  const chips: HTMLButtonElement[] = [];
+  if (hasBoard) {
+    const open = board !== null;
+    const { red } = boardAlarms(tab, sessions, Date.now());
+    chips.push(
+      chip("▦ Board", "#90a4ae", open, open && board!.windowFrame?.z === front, red > 0 ? { text: `⚠ ${red}`, kind: "stopped" } : null, () => {
+        if (!open) {
+          send({ t: "board-window", tab: tab.id, open: true });
+          const frame = tab.boardWindow?.frame ?? { ...DEFAULT_BOARD_FRAME, z: 0 };
+          send({ t: "board-window", tab: tab.id, frame: { ...frame, z: topOfTab(tab.id) + 1 } });
+        } else if (board!.windowFrame?.z === front) {
+          send({ t: "board-window", tab: tab.id, open: false });
+        } else {
+          raiseBoard();
+        }
+      }),
+    );
+  }
+  for (const session of inTab) {
+    const tile = tiles.get(session.id);
+    const open = !session.hidden;
+    const inFront = open && tile?.windowFrame?.z === front;
+    chips.push(
+      chip(session.banner || session.title || session.id, session.color, open, inFront, alertOf(session), () => {
+        if (session.hidden) showTerminal(session.id);
+        else if (inFront) send({ t: "session-hidden", session: session.id, hidden: true });
+        else raiseWindow(session.id);
+      }),
+    );
+  }
+  taskbar.replaceChildren(...chips);
+}
+
+// Times on the board ("3 min ago", "idle 12m") move on.
+setInterval(() => board?.refresh(), 30_000);
 
 // ---- connection ------------------------------------------------------------------------
 
@@ -644,10 +846,16 @@ function onServerMessage(message: ServerMessage): void {
     case "session": {
       const previous = sessions.get(message.session.id);
       sessions.set(message.session.id, message.session);
-      // Agents retitle their terminals many times a second: unless the session changed tabs
-      // or its window moved (which can move the unplaced windows too), only its own tile needs updating.
-      if (previous?.tab === message.session.tab && sameFrame(previous.frame, message.session.frame)) {
+      // Agents retitle their terminals many times a second: unless the session changed tabs, came
+      // out of or went to the taskbar, or its window moved (which can move the unplaced windows
+      // too), only its own tile, and what follows its state, need updating.
+      if (
+        previous?.tab === message.session.tab &&
+        previous.hidden === message.session.hidden &&
+        sameFrame(previous.frame, message.session.frame)
+      ) {
         tiles.get(message.session.id)?.update(message.session);
+        if (!previous || stateOf(previous) !== stateOf(message.session)) renderStatus();
       } else {
         render();
       }
@@ -745,7 +953,7 @@ async function reconnect(): Promise<void> {
 }
 
 function showApp(): void {
-  const main = el("div", { class: "main" }, [grid, empty]);
+  const main = el("div", { class: "main" }, [grid, empty, taskbar]);
   app.replaceChildren(
     topbar,
     notice,

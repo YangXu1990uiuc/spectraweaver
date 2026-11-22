@@ -7,6 +7,7 @@
 // terminals for others, see what each is doing, read their screens and answer them.
 
 import { resolve } from "node:path";
+import { ownTab } from "./board-cli.ts";
 import { fail, flag, parseFlags } from "./cli-args.ts";
 import { daemonCall, daemonHello, serverCall } from "./client.ts";
 import { type Paths, resolvePaths } from "./common/paths.ts";
@@ -89,13 +90,15 @@ function stateOf(session: SessionInfo): string {
 }
 
 export async function cmdNew(args: string[]): Promise<void> {
-  const flags = parseFlags(args, ["size", "cwd", "tab", "banner"]);
+  const flags = parseFlags(args, ["size", "cwd", "tab", "banner", "show"]);
   const match = /^(\d+)x(\d+)$/i.exec(flag(flags, "size") ?? "120x36");
   if (!match) fail("--size must look like 120x36");
   const paths = resolvePaths();
   const request = {
-    tab: flag(flags, "tab"),
+    // From a terminal, a new one lands in the same tab: a coordinating agent's workers sit by it.
+    tab: flag(flags, "tab") ?? (await ownTab(paths)),
     banner: flag(flags, "banner"),
+    show: flag(flags, "show") !== undefined,
     // Relative to where the command runs, as a path given to any command is.
     cwd: resolve(flag(flags, "cwd") ?? process.cwd()),
     cmd: flags.rest.length ? flags.rest.join(" ") : undefined,
@@ -107,7 +110,7 @@ export async function cmdNew(args: string[]): Promise<void> {
     console.log(created.session.id);
     return;
   }
-  if (request.tab || request.banner) fail("--tab and --banner need the server; start it with `spectraweaver up`");
+  if (flag(flags, "tab") || request.banner) fail("--tab and --banner need the server; start it with `spectraweaver up`");
   const session = await daemonCall<SessionInfo>(paths, {
     op: "create",
     cols: request.cols,
@@ -171,6 +174,17 @@ export async function cmdBanner(args: string[]): Promise<void> {
     banner: words.join(" "),
   });
   if (!updated) fail("banners are kept by the server; start it with `spectraweaver up`");
+}
+
+/** `show ID` brings a terminal's window out of the taskbar and in front; `hide ID` puts it away. */
+export async function cmdShowHide(args: string[], hidden: boolean): Promise<void> {
+  const [id, extra] = parseFlags(args, []).rest;
+  const name = hidden ? "hide" : "show";
+  if (!id || extra !== undefined) fail(`usage: spectraweaver ${name} ID`);
+  const updated = await serverCall<{ session: SessionView }>(resolvePaths(), "POST", `/api/v1/sessions/${encodeURIComponent(id)}`, {
+    hidden,
+  });
+  if (!updated) fail("windows are kept by the server; start it with `spectraweaver up`");
 }
 
 export async function cmdClose(args: string[]): Promise<void> {

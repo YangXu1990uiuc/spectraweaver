@@ -324,6 +324,7 @@ code {
   min-height: 0;
   position: relative;
   display: flex;
+  flex-direction: column;
 }
 
 .grid {
@@ -938,4 +939,460 @@ dialog section {
 .login input[readonly] {
   color: var(--muted);
   background: #232323;
+}
+
+/* ---- taskbar: the tab's windows, put away or not ---- */
+
+.taskbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+
+.task-chip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  height: 24px;
+  padding: 0 8px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom-width: 2px;
+}
+
+.task-chip.open {
+  color: var(--text);
+  background: #2a2a2a;
+  border-color: #3a3a3a;
+}
+
+.task-chip.front {
+  border-bottom-color: var(--link);
+}
+
+.chip-swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.task-chip:not(.open) .chip-swatch {
+  opacity: 0.45;
+}
+
+.chip-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.task-chip .badge.agent {
+  max-width: none;
+}
+
+.badge.agent.bell {
+  padding: 0;
+  color: var(--alert);
+  background: transparent;
+}
+
+/* ---- the task board's window ---- */
+
+.board-window .tile-header {
+  gap: 8px;
+  padding-left: 8px;
+}
+
+.board-icon {
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.board-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.board-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #1c1c1c;
+}
+
+.board-summary {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.board-muted {
+  color: var(--muted);
+}
+
+.board-progress {
+  display: flex;
+  width: 140px;
+  height: 8px;
+  overflow: hidden;
+  background: #333333;
+  border-radius: 4px;
+}
+
+.board-progress .status-done {
+  background: #5fb26c;
+}
+
+.board-progress .status-wip {
+  background: #4f86d9;
+}
+
+.board-progress .status-blocked {
+  background: #d9534f;
+}
+
+.board-lead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 4px 1px 8px;
+  font-size: 12px;
+  border-radius: 10px;
+}
+
+.board-lead.alarm {
+  border-color: var(--alert);
+  box-shadow: 0 0 0 1px var(--alert);
+}
+
+.board-lead .badge.agent {
+  max-width: none;
+}
+
+/* The graph's viewport: a drag on its background pans, Ctrl + wheel zooms. */
+.board-graph {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  overflow: auto;
+  cursor: grab;
+  user-select: none;
+  outline: none;
+}
+
+.board-graph.panning {
+  cursor: grabbing;
+}
+
+/* Centred while smaller than the viewport; auto margins drop to 0 when it is larger, so it scrolls. */
+.board-sizer {
+  flex: none;
+  position: relative;
+  margin: auto;
+}
+
+.board-view {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.board-zoom {
+  min-width: 48px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.board-direction {
+  margin-right: 6px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+
+.board-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+
+.board-edges {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.board-edges .edge {
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.board-edges .edge.done {
+  stroke: #5f9a6a;
+}
+
+.board-edges .edge.waiting {
+  stroke: #6b6b6b;
+  stroke-dasharray: 5 4;
+}
+
+.board-edges .edge-head.done {
+  fill: #5f9a6a;
+}
+
+.board-edges .edge-head.waiting {
+  fill: #6b6b6b;
+}
+
+/* A task: its fill is the status the coordinating agent gave it; its ring, the live state of its terminal. */
+.task {
+  position: absolute;
+  width: 192px;
+  height: 60px;
+  padding: 7px 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 2px;
+  text-align: left;
+  font-size: 12px;
+  line-height: 16px;
+  color: #111111;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.task:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.task.status-todo {
+  color: var(--text);
+  background: #262626;
+  border-color: #555555;
+}
+
+.task.status-todo:hover:not(:disabled) {
+  background: #2e2e2e;
+}
+
+.task.status-wip,
+.task.status-wip:hover:not(:disabled) {
+  background: #9dbcec;
+  border-color: #9dbcec;
+}
+
+.task.status-done,
+.task.status-done:hover:not(:disabled) {
+  background: #9fd3a8;
+  border-color: #9fd3a8;
+}
+
+.task.status-blocked,
+.task.status-blocked:hover:not(:disabled) {
+  background: #eba0a2;
+  border-color: #eba0a2;
+}
+
+.task.alarm {
+  box-shadow:
+    0 0 0 2px #1c1c1c,
+    0 0 0 4px var(--alert);
+}
+
+.task.asking {
+  box-shadow:
+    0 0 0 2px #1c1c1c,
+    0 0 0 4px #f5a623;
+}
+
+.task.selected {
+  box-shadow:
+    0 0 0 2px #1c1c1c,
+    0 0 0 4px #ffffff;
+}
+
+.task.selected.alarm {
+  box-shadow:
+    0 0 0 2px #1c1c1c,
+    0 0 0 4px var(--alert),
+    0 0 0 6px #ffffff;
+}
+
+.task.selected.asking {
+  box-shadow:
+    0 0 0 2px #1c1c1c,
+    0 0 0 4px #f5a623,
+    0 0 0 6px #ffffff;
+}
+
+.task:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 6px;
+}
+
+.task-line {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.task-id {
+  font-weight: 600;
+  opacity: 0.6;
+}
+
+.task-title {
+  font-weight: 600;
+}
+
+.task-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.task-term {
+  flex: none;
+  max-width: 50%;
+  padding: 0 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 4px;
+}
+
+.task.status-todo .task-term {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.task-live .badge.agent {
+  max-width: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-note {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.board-window.compact .task {
+  height: 34px;
+  padding: 0 8px;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.board-window.compact .task-line {
+  flex: 1;
+  min-width: 0;
+}
+
+.board-detail {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-height: 32px;
+  padding: 6px 12px;
+  font-size: 12px;
+  background: #222222;
+  border-top: 1px solid var(--border);
+}
+
+.board-detail strong {
+  color: #e8e8e8;
+}
+
+.status-pill {
+  padding: 0 6px;
+  font-size: 11px;
+  color: #111111;
+  border-radius: 8px;
+}
+
+.status-pill.status-todo {
+  background: var(--muted);
+}
+
+.status-pill.status-wip {
+  background: #9dbcec;
+}
+
+.status-pill.status-done {
+  background: #9fd3a8;
+}
+
+.status-pill.status-blocked {
+  background: #eba0a2;
+}
+
+.board-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 640px;
+  padding: 28px 32px;
+  overflow: auto;
+}
+
+.board-empty strong {
+  font-size: 15px;
+  color: #e8e8e8;
+}
+
+.board-empty p {
+  margin: 0;
+}
+
+.board-prompt-row {
+  display: flex;
+  gap: 8px;
+}
+
+.board-prompt {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  resize: none;
+  font: 12px/18px ui-monospace, Menlo, Consolas, monospace;
+  color: var(--text);
+  background: #262626;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+}
+
+.board-prompt-row {
+  align-items: flex-start;
 }
