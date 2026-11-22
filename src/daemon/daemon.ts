@@ -44,7 +44,10 @@ export interface DaemonHandle {
 const MAX_CONNECTION_BACKLOG = 128 * 1024 * 1024;
 
 /** Requests beyond protocol 1's first set that this daemon answers; the hello reply carries them. */
-export const DAEMON_FEATURES = ["resize"];
+export const DAEMON_FEATURES = ["resize", "text"];
+
+/** The most lines a "text" request returns: the default scrollback plus a tall screen. */
+const MAX_TEXT_ROWS = 20_000;
 
 export async function startDaemon(options: DaemonOptions): Promise<DaemonHandle> {
   const log = options.log ?? ((message: string) => console.error(`[daemon] ${message}`));
@@ -258,6 +261,12 @@ class Connection implements Subscriber {
       case "snapshot":
         this.session(request.session).snapshot((snapshot) => this.respond(request.id, snapshot));
         return;
+      case "text": {
+        const session = this.session(request.session);
+        const rows = clampInt(request.lines ?? session.info().rows, 1, MAX_TEXT_ROWS);
+        session.text(rows, (text) => this.respond(request.id, text));
+        return;
+      }
       case "unsubscribe": {
         const session = this.context.sessions.get(request.session);
         if (session) {

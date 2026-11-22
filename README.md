@@ -102,6 +102,8 @@ Closing the browser leaves everything running. After the server reboots, Spectra
 - **Text size:** Ctrl/Cmd + `=` / `-` / `0`, or Ctrl + mouse wheel. Below 100% only the font changes and the rest of the tile stays blank; 100% fills the tile. Pressing Ctrl + `=` at 100% makes the text larger still by giving the terminal fewer columns and rows (a resize: the program is told and redraws), so a terminal whose text has become too small is read again in a few presses.
 - **Focus one terminal:** ⤢ on its tile. ↗ opens it in its own window.
 - **Attention:** when a terminal rings the bell, its tile, its tab and the browser tab title are marked until you look at it.
+- **What each agent is doing:** a terminal running Claude Code or Codex shows it in its header: **working** (blue), **idle** at its prompt, **needs approval** or **needs you** (amber: a permission prompt, a question, a dialog), or **⚠** and why it stopped (red: `at capacity`, `usage limit`, `rate limited`, `safety block`, `context full`, `connection failed`, `login needed`, `API error`). A red or amber terminal also marks its tab. The state comes from the agents' own files where they record it (Claude Code's session registry and transcript, Codex's rollout) and from the bottom of the screen where they do not (Codex's approval prompts and its cyber warning); hover over the badge for the agent's own words. Recognising approval prompts and screen text needs a daemon started by this version (`spectraweaver down --all`, `up`, then **↻ Restore**).
+- **From the command line, or from an agent:** `spectraweaver ls`, `new`, `read`, `send`, `banner` and `close` (see Commands) let a script or a coordinating agent open terminals in a tab, see what each one's agent is doing, read its screen and answer it, as you would in the browser. `spectraweaver ls --json` gives everything, with each terminal's agent state; `SPECTRAWEAVER_SESSION_ID` tells a program which terminal it runs in.
 - **Restore after a reboot:** a reboot, or `spectraweaver down --all`, ends every terminal. SpectraWeaver keeps note of each one while it runs (tab, window, size, directory, and the Claude Code or Codex conversation in it), so afterwards **↻ Restore N** in the top bar opens them again where they were, each agent resuming the same conversation with flags such as `--dangerously-skip-permissions` and `--model`. An agent comes back at its prompt; tell it to continue. A plain shell comes back in its directory; whatever ran in it does not restart. **Forget** drops the ones you no longer need.
 - **Resume a recent conversation:** **↻ Restore** also lists the Claude Code and Codex conversations of the last two weeks that no terminal is on, read from the agents' own files; tick some and **Open** them in new terminals.
 - **Updating Claude Code or Codex:** `spectraweaver down --all`, update them, `spectraweaver up`, then **↻ Restore**.
@@ -136,10 +138,15 @@ SpectraWeaver uses no file locks and no SQLite, the usual sources of NFS trouble
 | `spectraweaver autostart [on \| off]` | Start SpectraWeaver when this host boots (a crontab `@reboot` line), or stop doing so. |
 | `spectraweaver passwd [--clear]` | Set (or remove) the password for signing in from the browser. |
 | `spectraweaver token [--rotate]` | Print the login token and link; `--rotate` replaces the token and signs out every browser. |
-| `spectraweaver new [--size 120x36] [--cwd DIR] [-- COMMAND]` | Create a session from the command line. |
-| `spectraweaver resize ID COLSxROWS` | Change a session's size; the program is told and redraws. |
-| `spectraweaver ls` | List sessions. |
 | `spectraweaver config [state-dir PATH \| --reset]` | Show where config and state live, or move this host's state. |
+| `spectraweaver ls [--json] [--tab NAME]` | List terminals: tab, banner, and what each one's coding agent is doing (working, idle, waiting for an answer, or stopped and why). |
+| `spectraweaver new [--tab NAME] [--banner TEXT] [--size 120x36] [--cwd DIR] [-- COMMAND]` | Create a terminal and print its id; `COMMAND` is typed into its shell. A tab name no tab has yet makes a new tab. |
+| `spectraweaver read ID [--lines N]` | Print a terminal's screen as text; `--lines N` prints its last N lines, scrollback included. |
+| `spectraweaver send ID TEXT… [--no-enter]` | Type text into a terminal and press Enter. `-` reads it from standard input; several lines go in as one paste. |
+| `spectraweaver send ID --key NAME…` | Press keys: `enter`, `esc`, `tab`, `shift-tab`, arrows (`up`…), `backspace`, `ctrl-c`, `ctrl-d`, or a single character such as `1`. |
+| `spectraweaver banner ID TEXT` | Set a terminal's banner. |
+| `spectraweaver resize ID COLSxROWS` | Change a terminal's size; the program is told and redraws. |
+| `spectraweaver close ID` | Close a terminal, ending its program. |
 
 `bun run install-cli [DIR]` installs the command as a small script in `~/.local/bin` (or `DIR`) that runs your checkout, so `git pull` updates it; run it again if you move the checkout. Without it, run `bun run dev <command>` inside the checkout.
 

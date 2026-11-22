@@ -135,11 +135,12 @@ Company home directories are often small and shared over NFS by several hosts, s
 - **Framing.** Frames on the Unix socket are `u32 length | u8 kind | payload`.
   - Kind 1 is a JSON control message.
   - Kind 2 is output: session id, u64 stream offset, raw bytes.
-- **Handshake:** `{"hello": {"protocol": 1, "daemonVersion": "…"}}`. The reply names the requests the daemon answers beyond protocol 1's first set (`features`, e.g. `["resize"]`), so a newer server or CLI can tell an older daemon what it needs; an unknown request is answered with an error rather than ignored. It also carries `instance`, random for each start of the daemon, which tells the server whether sessions missing from the list were closed or lost (§7.3).
+- **Handshake:** `{"hello": {"protocol": 1, "daemonVersion": "…"}}`. The reply names the requests the daemon answers beyond protocol 1's first set (`features`, e.g. `["resize", "text"]`), so a newer server or CLI can tell an older daemon what it needs; an unknown request is answered with an error rather than ignored. It also carries `instance`, random for each start of the daemon, which tells the server whether sessions missing from the list were closed or lost (§7.3).
 - **Requests:**
   - `list`
   - `create {cmd?, cwd, env, cols, rows}`
   - `resize {id, cols, rows}` (§4.3)
+  - `text {id, lines?}`: the last `lines` lines as plain text (the screen by default, scrollback included past it), rows the terminal wrapped joined, with whether the alternate screen and bracketed paste are on and when the program last printed. For `spectraweaver read` and for telling what an agent shows (§8.2).
   - `input {id, bytes}`
   - `signal {id, sig}`
   - `kill {id}`
@@ -459,25 +460,38 @@ A reboot, or `spectraweaver down --all`, ends every terminal. What matters most 
 
 ### 8.1 Status model
 
-| Status | Meaning |
-|---|---|
-| `running` | Output is flowing, or an agent reported work in progress. |
-| `needs-input` | An explicit signal that the program is waiting for the user. Sticky until the user interacts with the session. |
-| `done` | A turn or task finished. Sticky until the user interacts with the session. |
-| `idle` | The shell is in the foreground and output is quiet. |
-| `exited` / `dead` | The process ended, or it is gone after a daemon restart or reboot. |
+Every terminal whose foreground program is Claude Code or Codex carries an `AgentStatus` (`SessionView.agent`), looked at every 2 seconds and sent to browsers when it changes:
 
-### 8.2 Generic signals (no configuration)
+| Activity | Meaning | Shown |
+|---|---|---|
+| `working` | A turn is running. | blue badge |
+| `idle` | The agent waits at its prompt for the next instruction. | grey badge |
+| `waiting` | Someone has to answer it: a permission prompt, a question, a dialog. `reason`: `needs approval`, `needs you`, `needs input`. | amber badge and outline; its tab is marked |
+| `stopped` | An error ended its turn and it will not go on by itself. `reason`: `at capacity`, `usage limit`, `rate limited`, `safety block`, `context full`, `connection failed`, `login needed`, `API error`, …; `detail`: the agent's own words. | red badge (⚠) and outline; its tab is marked |
+| `unknown` | Neither its files nor its screen tell. | the agent's name |
+
+A `warning` (for example `cyber flag`, Codex rerouting a request after flagging it) is shown in red like a stop, even while the agent works. Plain shells and other programs carry no status; the bell (§8.2) still marks them.
+
+### 8.2 Where the status comes from
+
+The agents' own files first, because they are structured, and only their steadiest fields:
+
+- **Claude Code** writes `status` (`busy`, `idle`, `waiting`) and `waitingFor` (`permission prompt`, `dialog open`, `input needed`, …) into its session registry, `<config>/sessions/<pid>.json`, the file restoring already reads for the conversation id (§7.3). A turn an API error ended finishes with an assistant entry marked `isApiErrorMessage` in the transcript, whose `error` names the kind (`overloaded`, `rate_limit`, `billing_error`, `server_error`, `authentication_failed`, `invalid_request`…); safety refusals say "safeguards" in the text. Some versions also write their own reading of a blocked turn (`tempo: "blocked"`, `needs`), which counts as a stop.
+- **Codex** (0.171) records `task_started` and `task_complete` (or `turn_aborted`) for each turn in its rollout; a turn an error ended carries `error {message, codex_error_info}`, whose kind (`server_overloaded`, `usage_limit_exceeded`, `cyber_policy`, `context_window_exceeded`, `response_stream_disconnected`…) maps to the reasons above.
+- **The screen** fills the gaps: Codex records neither its approval prompts ("Would you like to run the following command?" together with its choices) nor its warnings, and Claude Code's registry misses dialogs shown before its prompt starts (whether to trust a folder). Versions that record less fall back on it too: a program printing in the last 3 seconds is working; a quiet one is stopped if one of the last 15 non-empty lines matches a known error, idle otherwise. Screen text can be anything an agent printed, so it is read only near the bottom and only where the files say nothing.
+
+Verified against Claude Code 2.1.330 (trust dialog, permission prompt, rejection, idle) and the Codex 0.171 source; the tests act out each state with fake agents.
+
+Other generic signals, for any program:
 
 - **Bell** (the engine's `onBell`).
 - **OSC 9 and OSC 777 notifications.** Codex sends a plain BEL to terminals it does not recognize; Gemini sends OSC 777 to xterm.js-class terminals.
 - **Terminal title changes,** for example Codex's `[ ! ] Action Required`.
-- **Foreground process.** On Linux, read `/proc/<shell pid>/stat` field `tpgid`, then `/proc/<pgid>/comm`. If the shell itself is in the foreground, no program is running.
-- **Output activity timestamps.**
+- **Foreground process.** On Linux, read `/proc/<shell pid>/stat` field `tpgid`, then `/proc/<pgid>/cmdline`. If the shell itself is in the foreground, no program is running.
 
 ### 8.3 Agent integrations
 
-All integrations are opt-in, installed with `spectraweaver hooks install <agent>`, and do nothing outside SpectraWeaver sessions. Installers merge into existing config files, with a backup, and never overwrite them.
+Not built yet; the agents' files (§8.2) give most of this without them. All integrations would be opt-in, installed with `spectraweaver hooks install <agent>`, and do nothing outside SpectraWeaver sessions. Installers merge into existing config files, with a backup, and never overwrite them.
 
 - **Claude Code.** Command hooks call `spectraweaver hook claude-code`, which exits silently when `SPECTRAWEAVER_SESSION_ID` is unset or the server is unreachable.
 
@@ -500,15 +514,27 @@ All integrations are opt-in, installed with `spectraweaver hooks install <agent>
 
 ### 8.4 Surfacing status
 
-- Badges on tiles and filmstrip cards.
-- A count in the tab title, for example "(2) SpectraWeaver".
-- Optional desktop notifications and sound (these need a secure context).
+- A badge in each terminal's header, and a red or amber outline for a terminal that needs someone (§8.1).
+- A mark on the tab, and a count in the browser tab's title ("(2) SpectraWeaver"), for terminals that rang the bell or whose agent waits, stopped or warns.
+- `spectraweaver ls` (§11), for scripts and agents.
+- Later: optional desktop notifications and sound (these need a secure context).
 
 ### 8.5 Updating agents
 
 Updating Claude Code or Codex means restarting every running copy, and Codex cannot be replaced while copies of it run. The way is `spectraweaver down --all`, the update, `spectraweaver up`, then **↻ Restore** (§7.3), which resumes each agent on its conversation in its terminal's place.
 
 An earlier version stopped the agents in place (Ctrl+C pressed twice) and parsed the resume command each prints on exit (`Resume this session with: claude --resume ID`). That depended on the agents' exit messages and on Ctrl+C reaching them at the right moment, and it did not help after a reboot; knowing each conversation id while the agent runs covers both.
+
+### 8.6 Coordinating agents from the command line
+
+Running ten agents by hand does not scale; a coordinating agent can do the rounds instead. SpectraWeaver gives it hands and a display, and nothing more: how tasks are tracked (a repository, files), how agents leave each other messages, and how often it looks are for the prompt the person gives it, not for SpectraWeaver.
+
+- **Hands:** `spectraweaver new --tab NAME --banner TEXT -- COMMAND` opens a terminal (a tab name no tab has makes a tab), `read` prints its screen, `send` types into it (text then Enter, several lines as one bracketed paste, or keys such as `esc`, `ctrl-c`, `1`), `banner` labels it, `close` ends it.
+- **Eyes:** `spectraweaver ls --json` lists every terminal with its tab, banner and agent status (§8.1).
+- **Interface.** `read`, `send` and `close` talk to the daemon over its socket, like `new` without a tab. What only the server knows (tabs, banners, statuses) goes through `/api/v1/sessions` on the server, authenticated with the login token as a bearer token: the command runs as the same user and reads the token file. A web page cannot send that header across origins without a CORS preflight, which the server never answers, so the interface adds nothing a page could use; the Host check (§9.2) applies as everywhere.
+- A program can tell which terminal it runs in from `SPECTRAWEAVER_SESSION_ID`; `ls` marks it.
+
+The same commands are a person's too: a terminal opened with `new --tab` shows up in the browser at once, and the person can look in and step in at any time.
 
 ## 9. Security
 
@@ -590,11 +616,14 @@ spectraweaver up [--host ADDR --allow-remote] | down | status
                                         start/stop daemon + server, show state
 spectraweaver autostart [on|off]          start at boot (crontab @reboot)
 spectraweaver daemon | server             service entry points
-spectraweaver new [--name N] [--size 120x36] [--cwd DIR] [-- CMD...]
-spectraweaver ls
-spectraweaver attach <session>            emergency access from any terminal (detach: Ctrl+] twice)
-spectraweaver banner [<session>] <text>   session defaults to $SPECTRAWEAVER_SESSION_ID
-spectraweaver kill <session>
+spectraweaver ls [--json] [--tab NAME]    terminals, with each agent's status (§8.1)
+spectraweaver new [--tab NAME] [--banner TEXT] [--size 120x36] [--cwd DIR] [-- CMD...]
+spectraweaver read ID [--lines N]         a terminal's screen (and scrollback) as text
+spectraweaver send ID TEXT...|- [--no-enter] | --key NAME...
+spectraweaver banner ID TEXT
+spectraweaver resize ID COLSxROWS
+spectraweaver close ID
+spectraweaver attach <session>            (planned) emergency access from any terminal (detach: Ctrl+] twice)
 spectraweaver hook <agent>                agent hook entry point (JSON on stdin)
 spectraweaver hooks install <agent>
 spectraweaver passwd [--clear]            set or remove the browser sign-in password

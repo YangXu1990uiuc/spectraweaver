@@ -12,96 +12,15 @@ import { loadInstance, loadSettings, migrateOlderState, saveInstance, saveSettin
 import { networkFilesystem, writeFileAtomic } from "./common/files.ts";
 import { isLoopbackAddress, pickFreePort, portIsFree } from "./common/net.ts";
 import { ensurePrivateDir, expandHome, hostKey, MAX_SOCKET_PATH, type Paths, resolvePaths } from "./common/paths.ts";
-import {
-  type DaemonMessage,
-  type DaemonRequest,
-  decodeJson,
-  encodeJsonFrame,
-  FrameDecoder,
-  type HelloResult,
-  KIND_JSON,
-  type SessionInfo,
-} from "./common/protocol.ts";
+import { fail, FIRST_PORT, flag, parseFlags, USAGE } from "./cli-args.ts";
+import { daemonCall, daemonHello, isAlive, readServerState, type ServerState, serverUrl } from "./client.ts";
+import type { SessionInfo } from "./common/protocol.ts";
 import { VERSION } from "./common/version.ts";
+import { cmdBanner, cmdClose, cmdList, cmdNew, cmdRead, cmdSend } from "./control.ts";
 
-const FIRST_PORT = 7777;
 const PORT_SEARCH = 100;
 const DEFAULT_HOST = "127.0.0.1";
-const BOOLEAN_FLAGS = new Set(["all", "clear", "rotate", "reset", "allow-remote"]);
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
-
-const USAGE = `spectraweaver ${VERSION}: persistent terminals in the browser
-
-Usage:
-  spectraweaver up [--port N] [--host ADDR --allow-remote] [--allow-host NAME]...
-                        start the daemon and the server in the background
-                        (the first run picks a free port from ${FIRST_PORT} and remembers it;
-                        listening beyond localhost needs --allow-remote: see SECURITY.md)
-  spectraweaver down [--all]
-                        stop the server; --all also stops the daemon, ending every session
-  spectraweaver status    show what is running
-  spectraweaver autostart [on | off]
-                        start SpectraWeaver when this host boots (a crontab @reboot line);
-                        without on or off, say whether it does
-  spectraweaver passwd [--clear]
-                        set (or remove) the password for signing in from the browser
-  spectraweaver token [--rotate]
-                        print the login token and link; --rotate replaces it
-  spectraweaver new [--size 120x36] [--cwd DIR] [-- COMMAND...]
-                        create a session (COMMAND is typed into its shell)
-  spectraweaver resize ID COLSxROWS
-                        change a session's size; the program is told and redraws
-  spectraweaver ls        list sessions
-  spectraweaver config    show where config and state live
-  spectraweaver config state-dir PATH | --reset
-                        keep state (socket, logs, tabs) under PATH, e.g. on a local disk
-                        when the home directory is small or on NFS
-  spectraweaver daemon    run the daemon in the foreground
-  spectraweaver server [--port N] [--host ADDR --allow-remote] [--allow-host NAME]...
-                        run the server in the foreground
-`;
-
-interface ServerState {
-  pid: number;
-  host: string;
-  port: number;
-}
-
-interface Flags {
-  values: Map<string, string[]>;
-  rest: string[];
-}
-
-function parseFlags(args: string[], known: string[]): Flags {
-  const values = new Map<string, string[]>();
-  const rest: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
-    if (arg === "--") {
-      rest.push(...args.slice(i + 1));
-      break;
-    }
-    const [name, inline] = arg.startsWith("--") ? arg.slice(2).split("=", 2) : [undefined, undefined];
-    if (name === undefined) {
-      rest.push(arg);
-      continue;
-    }
-    if (!known.includes(name)) fail(`unknown option --${name}\n\n${USAGE}`);
-    const value = BOOLEAN_FLAGS.has(name) ? "true" : (inline ?? args[++i]);
-    if (value === undefined) fail(`--${name} needs a value`);
-    values.set(name, [...(values.get(name) ?? []), value]);
-  }
-  return { values, rest };
-}
-
-function flag(flags: Flags, name: string): string | undefined {
-  return flags.values.get(name)?.at(-1);
-}
-
-function fail(message: string): never {
-  console.error(message);
-  process.exit(1);
-}
 
 /**
  * SpectraWeaver is a shell in a web page, so listening beyond localhost needs an explicit
@@ -124,50 +43,6 @@ function checkRemoteExposure(host: string, optedIn: boolean): void {
   );
 }
 
-// ---- talking to the daemon -------------------------------------------------------------
-
-function daemonCall<T>(paths: Paths, request: DaemonRequest): Promise<T> {
-  return new Promise((resolve, reject) => {
-    let socket: { end(): void } | null = null;
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const settle = (action: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket?.end();
-      action();
-    };
-    const decoder = new FrameDecoder((kind, payload) => {
-      if (kind !== KIND_JSON) return;
-      const message = decodeJson<DaemonMessage>(payload);
-      if (message.t !== "res" || message.id !== 1) return;
-      settle(() => (message.ok ? resolve(message.result as T) : reject(new Error(message.error))));
-    });
-    Bun.connect({
-      unix: paths.daemonSocket,
-      socket: {
-        data: (_socket, chunk) => decoder.push(chunk),
-        close: () => settle(() => reject(new Error("the daemon closed the connection"))),
-      },
-    })
-      .then((connected) => {
-        socket = connected;
-        connected.write(encodeJsonFrame({ ...request, t: "req", id: 1 }));
-        timer = setTimeout(() => settle(() => reject(new Error("the daemon did not answer"))), 5000);
-      })
-      .catch(() => settle(() => reject(new Error("the daemon is not running (start it with `spectraweaver up`)"))));
-  });
-}
-
-async function daemonHello(paths: Paths): Promise<HelloResult | null> {
-  if (!existsSync(paths.daemonSocket)) return null;
-  try {
-    return await daemonCall<HelloResult>(paths, { op: "hello", protocol: 1, client: "spectraweaver-cli" });
-  } catch {
-    return null;
-  }
-}
 
 // ---- background processes --------------------------------------------------------------
 
@@ -213,28 +88,8 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs: number): Promis
   return false;
 }
 
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
-function readServerState(paths: Paths): ServerState | null {
-  try {
-    const state = JSON.parse(readFileSync(paths.serverStateFile, "utf8")) as ServerState;
-    return isAlive(state.pid) ? state : null;
-  } catch {
-    return null;
-  }
-}
 
-function serverUrl(host: string, port: number): string {
-  const shown = host === "0.0.0.0" || host === "::" ? "localhost" : host.includes(":") ? `[${host}]` : host;
-  return `http://${shown}:${port}`;
-}
 
 /** The address to open in a browser. A wildcard bind is reached by this machine's name. */
 function browserUrl(host: string, port: number): string {
@@ -532,20 +387,6 @@ async function cmdToken(args: string[]): Promise<void> {
   if (flag(flags, "rotate")) console.log("The old token and every browser login are no longer valid.");
 }
 
-async function cmdNew(args: string[]): Promise<void> {
-  const flags = parseFlags(args, ["size", "cwd"]);
-  const match = /^(\d+)x(\d+)$/i.exec(flag(flags, "size") ?? "120x36");
-  if (!match) fail("--size must look like 120x36");
-  const session = await daemonCall<SessionInfo>(resolvePaths(), {
-    op: "create",
-    cols: Number(match[1]),
-    rows: Number(match[2]),
-    cwd: flag(flags, "cwd") ?? process.cwd(),
-    cmd: flags.rest.length ? flags.rest.join(" ") : undefined,
-  });
-  console.log(session.id);
-}
-
 async function cmdResize(args: string[]): Promise<void> {
   const [id, size] = args;
   const match = /^(\d+)x(\d+)$/i.exec(size ?? "");
@@ -564,19 +405,6 @@ async function cmdResize(args: string[]): Promise<void> {
     rows: Number(match[2]),
   });
   console.log(`${session.id}  ${session.cols}x${session.rows}`);
-}
-
-async function cmdList(): Promise<void> {
-  const list = await daemonCall<SessionInfo[]>(resolvePaths(), { op: "list" });
-  if (list.length === 0) {
-    console.log("no sessions");
-    return;
-  }
-  for (const session of list) {
-    const state = session.exited ? `exited ${session.exited.code ?? session.exited.signal}` : `pid ${session.pid}`;
-    const label = session.title || session.cmd || session.cwd;
-    console.log(`${session.id}  ${`${session.cols}x${session.rows}`.padEnd(8)} ${state.padEnd(12)} ${label}`);
-  }
 }
 
 async function cmdConfig(args: string[]): Promise<void> {
@@ -706,7 +534,19 @@ try {
       await cmdResize(args);
       break;
     case "ls":
-      await cmdList();
+      await cmdList(args);
+      break;
+    case "read":
+      await cmdRead(args);
+      break;
+    case "send":
+      await cmdSend(args);
+      break;
+    case "banner":
+      await cmdBanner(args);
+      break;
+    case "close":
+      await cmdClose(args);
       break;
     case "config":
       await cmdConfig(args);

@@ -4,6 +4,7 @@
 
 import "@xterm/xterm/css/xterm.css";
 import {
+  type AgentStatus,
   type ClientMessage,
   decodeOutputPayload,
   type Frame,
@@ -48,6 +49,12 @@ let tabs: TabView[] = [];
 const tiles = new Map<string, Tile>();
 /** Sessions that rang the bell since this browser last looked at them. */
 const belled = new Set<string>();
+
+/** Its agent stopped, warns, or waits for an answer: someone has to look. */
+function needsSomeone(session: SessionView): boolean {
+  const agent = session.agent;
+  return agent !== undefined && (agent.activity === "stopped" || agent.activity === "waiting" || agent.warning !== undefined);
+}
 let socket: WebSocket | null = null;
 let connected = false;
 let daemonUp = false;
@@ -316,7 +323,7 @@ function setStatus(): void {
 
 /** Browser-tab title and icon show the workspace, so several open windows are easy to tell apart. */
 function updateWindowIdentity(tab: TabView | null): void {
-  const waiting = belled.size;
+  const waiting = [...sessions.values()].filter((session) => belled.has(session.id) || needsSomeone(session)).length;
   document.title = `${waiting > 0 ? `(${waiting}) ` : ""}${tab ? `${tab.name} · ` : ""}SpectraWeaver`;
   const color = tab?.color ?? "#3794ff";
   const dot = waiting > 0 ? '<circle cx="12" cy="4" r="3.5" fill="#cca700" stroke="#1f1f1f" stroke-width="1"/>' : "";
@@ -338,6 +345,7 @@ class Tile {
   private readonly subtitle: HTMLSpanElement;
   private readonly size: HTMLButtonElement;
   private readonly exitBadge: HTMLSpanElement;
+  private readonly agentBadge: HTMLSpanElement;
   private readonly focusButton: HTMLButtonElement;
 
   constructor(session: SessionView) {
@@ -347,6 +355,7 @@ class Tile {
     this.subtitle = el("span", { class: "subtitle" });
     this.size = el("button", { class: "meta size-btn", type: "button" });
     this.exitBadge = el("span", { class: "badge exited", hidden: "" });
+    this.agentBadge = el("span", { class: "badge agent", hidden: "" });
     this.focusButton = el("button", { class: "icon-btn", title: "Focus this terminal" }, ["⤢"]);
     const windowButton = el("button", { class: "icon-btn", title: "Open in a new window" }, ["↗"]);
     const closeButton = el("button", { class: "icon-btn", title: "Close terminal" }, ["✕"]);
@@ -356,6 +365,7 @@ class Tile {
       el("span", { class: "bell-dot", title: "Wants attention" }, ["●"]),
       this.banner,
       this.subtitle,
+      this.agentBadge,
       this.exitBadge,
       this.size,
       this.focusButton,
@@ -492,6 +502,30 @@ class Tile {
     if (exited) this.exitBadge.textContent = exited.signal ? `exited (${exited.signal})` : `exited ${exited.code ?? ""}`;
     this.focusButton.textContent = currentView().focus === session.id ? "⤡" : "⤢";
     this.root.classList.toggle("bell", belled.has(session.id));
+    this.showAgent(session.agent);
+  }
+
+  /** What the terminal's coding agent is doing; a stop or a warning turns the window red. */
+  private showAgent(agent: AgentStatus | undefined): void {
+    const badge = this.agentBadge;
+    badge.hidden = !agent;
+    const alarm = agent !== undefined && (agent.activity === "stopped" || agent.warning !== undefined);
+    this.root.classList.toggle("alarm", alarm);
+    this.root.classList.toggle("asking", agent?.activity === "waiting");
+    if (!agent) return;
+    const text = alarm
+      ? `⚠ ${agent.activity === "stopped" ? (agent.reason ?? "stopped") : agent.warning}`
+      : agent.activity === "waiting"
+        ? (agent.reason ?? "needs you")
+        : agent.activity === "unknown"
+          ? agent.name
+          : agent.activity;
+    if (badge.textContent !== text) badge.textContent = text;
+    badge.className = `badge agent ${alarm ? "stopped" : agent.activity}`;
+    const reason = agent.reason ? ` (${agent.reason})` : "";
+    badge.title = [`${agent.name}: ${agent.activity}${reason}`, agent.warning && `warning: ${agent.warning}`, agent.detail]
+      .filter(Boolean)
+      .join("\n");
   }
 
   /** The daemon message changed: the terminal's controls follow what the daemon can do. */
@@ -525,7 +559,7 @@ function render(): void {
   const alerts = new Set<string>();
   for (const session of sessions.values()) {
     counts.set(session.tab, (counts.get(session.tab) ?? 0) + 1);
-    if (belled.has(session.id)) alerts.add(session.tab);
+    if (belled.has(session.id) || needsSomeone(session)) alerts.add(session.tab);
   }
   tabStrip.render({ tabs, activeId: view.tab?.id ?? null, counts, alerts });
 

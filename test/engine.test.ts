@@ -111,3 +111,19 @@ test("answers colour and version queries and reports notifications", async () =>
   expect(events.titles).toEqual(["my title"]);
   expect(events.bells).toBe(1);
 });
+
+test("text joins the rows a long line wrapped onto, and ends with the bottom of the screen", async () => {
+  const { engine, write } = makeEngine(10, 4);
+  // Ten columns: the long line wraps onto a second row, and the space at the wrap is kept.
+  await write("first\r\n012345678 abc\r\nlast");
+  expect(engine.text(4)).toEqual(["first", "012345678 abc", "last"]);
+  // The screen's rows only, then scrollback too.
+  await write("\r\nmore\r\nand more");
+  expect(engine.text(4)).toEqual(["abc", "last", "more", "and more"]);
+  expect(engine.text(100)).toEqual(["first", "012345678 abc", "last", "more", "and more"]);
+  expect(engine.altScreen).toBe(false);
+  await write("\x1b[?1049h\x1b[?2004h\x1b[Hfull");
+  expect(engine.altScreen).toBe(true);
+  expect(engine.bracketedPaste).toBe(true);
+  expect(engine.text(4)).toEqual(["full", "", "", ""]);
+});

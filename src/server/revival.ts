@@ -70,19 +70,9 @@ export function observe(
  * <config>/sessions/<pid>.json, and Codex keeps its rollout file open.
  */
 function exactConversation(agent: Agent, pid: number, dirs: AgentDirs): string | null {
-  const own = agentDirs({ ...pick(dirs), ...agentEnv(pid) });
   if (agent.name === "claude") {
-    try {
-      const entry = JSON.parse(readFileSync(`${own.claude}/sessions/${pid}.json`, "utf8")) as Record<string, unknown>;
-      const id = entry.sessionId;
-      if (entry.pid !== pid || typeof id !== "string" || !isConversationId(id)) return null;
-      // A file left by an earlier process with the same pid predates this one.
-      const started = processStartMs(pid);
-      if (started && typeof entry.startedAt === "number" && entry.startedAt < started - 60_000) return null;
-      return id.toLowerCase();
-    } catch {
-      return null;
-    }
+    const id = claudeRegistry(pid, dirs)?.sessionId;
+    return typeof id === "string" && isConversationId(id) ? id.toLowerCase() : null;
   }
   for (const proc of [pid, ...descendants(pid)]) {
     for (const path of openFiles(proc)) {
@@ -91,6 +81,24 @@ function exactConversation(agent: Agent, pid: number, dirs: AgentDirs): string |
     }
   }
   return null;
+}
+
+/**
+ * Claude Code's entry for a running process in <config>/sessions/<pid>.json: its conversation
+ * (sessionId) and, in recent versions, what it is doing (status). Null if there is none.
+ */
+export function claudeRegistry(pid: number, dirs: AgentDirs): Record<string, unknown> | null {
+  try {
+    const path = `${agentDirsOf(pid, dirs).claude}/sessions/${pid}.json`;
+    const entry = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    if (entry.pid !== pid) return null;
+    // A file left by an earlier process with the same pid predates this one.
+    const started = processStartMs(pid);
+    if (started && typeof entry.startedAt === "number" && entry.startedAt < started - 60_000) return null;
+    return entry;
+  } catch {
+    return null;
+  }
 }
 
 function fromArgs(agent: Agent, args: string[], claimed: Set<string>): string | null {
@@ -108,8 +116,9 @@ function latestIn(agent: Agent, cwd: string, pid: number, claimed: Set<string>, 
   return null;
 }
 
-function pick(dirs: AgentDirs): Record<string, string> {
-  return { CLAUDE_CONFIG_DIR: dirs.claude, CODEX_HOME: dirs.codex };
+/** Where an agent process keeps its files: `dirs`, unless its environment names others. */
+export function agentDirsOf(pid: number, dirs: AgentDirs): AgentDirs {
+  return agentDirs({ CLAUDE_CONFIG_DIR: dirs.claude, CODEX_HOME: dirs.codex, ...agentEnv(pid) });
 }
 
 /** The agent directories a process was given in its environment (Linux only). */

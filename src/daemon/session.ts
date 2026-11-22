@@ -4,7 +4,7 @@
 
 import type { Subprocess } from "bun";
 import { sessionEnv } from "../common/env.ts";
-import type { DaemonEvent, SessionInfo, Snapshot } from "../common/protocol.ts";
+import type { DaemonEvent, ScreenText, SessionInfo, Snapshot } from "../common/protocol.ts";
 import { Engine } from "./engine.ts";
 
 export interface Subscriber {
@@ -49,6 +49,7 @@ export class Session {
   private readonly focused = new Set<string>();
   private typeAhead: (() => void) | null = null;
   private killTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastOutputAt: number | null = null;
 
   constructor(private readonly options: SessionOptions) {
     this.id = options.id;
@@ -121,6 +122,21 @@ export class Session {
 
   snapshot(onSnapshot: (snapshot: Snapshot) => void): void {
     this.engine.write("", () => onSnapshot(this.snapshotNow()));
+  }
+
+  /** The terminal's last `rows` rows as text, once the engine has parsed everything received so far. */
+  text(rows: number, done: (text: ScreenText) => void): void {
+    this.engine.write("", () =>
+      done({
+        session: this.id,
+        cols: this.state.cols,
+        rows: this.state.rows,
+        lines: this.engine.text(rows),
+        altScreen: this.engine.altScreen,
+        bracketedPaste: this.engine.bracketedPaste,
+        lastOutputAt: this.lastOutputAt,
+      }),
+    );
   }
 
   unsubscribe(subscriber: Subscriber): void {
@@ -207,6 +223,7 @@ export class Session {
   private onPtyData(data: Uint8Array): void {
     // Copy: the engine queues chunks and Bun may reuse the read buffer.
     const chunk = data.slice();
+    this.lastOutputAt = Date.now();
     this.typeAhead?.();
     this.engine.write(chunk, () => {
       const start = this.offset;

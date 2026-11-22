@@ -8,14 +8,17 @@ import { statSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { loadInstance } from "../common/config.ts";
 import { ensurePrivateDir, type Paths } from "../common/paths.ts";
-import type {
-  ClientMessage,
-  DaemonEvent,
-  LostSession,
-  ServerMessage,
-  SessionInfo,
-  SessionView,
-  Snapshot,
+import {
+  type AgentStatus,
+  type ClientMessage,
+  type DaemonEvent,
+  type LostSession,
+  type ScreenText,
+  type ServerMessage,
+  type SessionInfo,
+  type SessionView,
+  type Snapshot,
+  TAB_COLORS,
 } from "../common/protocol.ts";
 import { VERSION } from "../common/version.ts";
 import indexPage from "../web/index.html";
@@ -30,12 +33,14 @@ import {
   setPassword,
   validatePassword,
 } from "./auth.ts";
-import { agentNamed, resumeCommand, shellQuote } from "./agents.ts";
+import { agentNamed, detectAgent, resumeCommand, shellQuote } from "./agents.ts";
 import { type AgentDirs, agentDirs, Conversations } from "./conversations.ts";
+import { type Control, type CreateRequest, controlRoutes } from "./control-api.ts";
 import { DaemonClient } from "./daemon-client.ts";
 import { foregroundProcess, processCwd } from "./foreground.ts";
 import { MetaStore } from "./meta.ts";
 import { observe, type RevivalDeps } from "./revival.ts";
+import { AgentStatusReader } from "./status.ts";
 
 export interface ServerOptions {
   paths: Paths;
@@ -47,6 +52,8 @@ export interface ServerOptions {
   log?: (message: string) => void;
   /** How often to note what would bring each terminal back after a restart. */
   revivalEveryMs?: number;
+  /** How often to look at what each terminal's coding agent is doing. */
+  statusEveryMs?: number;
   /** Where Claude Code and Codex keep their conversations; from the environment by default. */
   agentDirs?: AgentDirs;
 }
@@ -75,6 +82,9 @@ interface Fan {
 // A browser that cannot keep up is disconnected; it reconnects and gets fresh snapshots.
 const MAX_CLIENT_BACKLOG = 32 * 1024 * 1024;
 const REVIVAL_EVERY_MS = 15_000;
+const STATUS_EVERY_MS = 2000;
+/** The rows of a terminal's screen read to tell what its agent shows. */
+const STATUS_SCREEN_ROWS = 60;
 /** How far back "Resume a recent conversation" looks, and how many it lists. */
 const RECENT_CONVERSATIONS_MS = 14 * 24 * 3600_000;
 const RECENT_CONVERSATIONS_MAX = 60;
@@ -114,16 +124,21 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
   /** What the connected daemon answers beyond protocol 1's first requests (HelloResult.features). */
   let daemonFeatures = new Set<string>();
 
+  /** What each terminal's coding agent is doing, for terminals that run one. */
+  const statuses = new Map<string, AgentStatus>();
+
   const view = (session: SessionInfo): SessionView => ({
     ...session,
     banner: meta.banner(session.id),
     tab: meta.tabOf(session.id),
     color: meta.colorOf(session.id, sessions.keys()),
     frame: meta.frameOf(session.id),
+    agent: statuses.get(session.id),
   });
   const dirs = options.agentDirs ?? agentDirs();
   const conversations = new Conversations(dirs);
   const revivalDeps: RevivalDeps = { foreground: foregroundProcess, processCwd, conversations, dirs };
+  const statusReader = new AgentStatusReader(conversations, dirs);
 
   const send = (client: Client, data: string | Uint8Array) => {
     client.send(data);
@@ -151,6 +166,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
           .call<SessionInfo[]>({ op: "list" })
           .then((list) => {
             sessions.clear();
+            statuses.clear();
             for (const session of list) sessions.set(session.id, session);
             // Daemons older than the instance id are told apart by pid.
             meta.reconcile(new Set(sessions.keys()), hello.instance ?? `pid ${hello.pid}`);
@@ -204,12 +220,14 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         if (session) session.exited = { code: event.code, signal: event.signal, at: Date.now() };
         // Its program ended: there is nothing left to restore.
         meta.setRevival(event.session, undefined);
+        statuses.delete(event.session);
         broadcastSession(event.session);
         return;
       }
       case "removed":
         sessions.delete(event.session);
         fans.delete(event.session);
+        statuses.delete(event.session);
         meta.forget(event.session);
         for (const client of clients) client.data.subs.delete(event.session);
         broadcast({ t: "removed", session: event.session });
@@ -556,6 +574,107 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
   }
   const revivalTimer = setInterval(noteRevivals, options.revivalEveryMs ?? REVIVAL_EVERY_MS);
 
+  // ---- what the agents are doing ----------------------------------------------------------
+
+  let notingStatuses = false;
+
+  /** Looks at what every terminal's agent is doing; terminals whose status changed are sent again. */
+  async function noteStatuses(): Promise<void> {
+    if (notingStatuses || !daemon.connected) return;
+    notingStatuses = true;
+    try {
+      const canRead = daemonFeatures.has("text");
+      let unnoted = false;
+      const live = [...sessions.values()].filter((session) => !session.exited);
+      await Promise.all(
+        live.map(async (session) => {
+          const running = foregroundProcess(session.pid);
+          const agent = running && !running.isShell ? detectAgent(running.argv) : null;
+          let status: AgentStatus | undefined;
+          if (running && agent) {
+            const revival = meta.revival(session.id)?.agent;
+            // A conversation noted for this very process; a new agent waits for the next note.
+            const conversation = revival?.pid === running.pid ? revival.conversation : undefined;
+            if (revival?.pid !== running.pid) unnoted = true;
+            const screen = canRead
+              ? await daemon
+                  .call<ScreenText>({ op: "text", session: session.id, lines: STATUS_SCREEN_ROWS })
+                  .catch(() => null)
+              : null;
+            status = statusReader.status(agent, running.pid, conversation, screen);
+          }
+          if (!sessions.has(session.id) || JSON.stringify(status) === JSON.stringify(statuses.get(session.id))) return;
+          if (status) statuses.set(session.id, status);
+          else statuses.delete(session.id);
+          broadcastSession(session.id);
+        }),
+      );
+      // An agent started since the last note: find its conversation now rather than in a few seconds.
+      if (unnoted) noteRevivals();
+    } catch (error) {
+      log(`looking at the agents failed: ${(error as Error).message}`);
+    } finally {
+      notingStatuses = false;
+    }
+  }
+  const statusTimer = setInterval(() => void noteStatuses(), options.statusEveryMs ?? STATUS_EVERY_MS);
+
+  // ---- the command line's interface ------------------------------------------------------
+
+  /** A tab by id or name; a name no tab has makes a new tab. */
+  function tabFor(nameOrId: string): string {
+    const name = nameOrId.replace(/\s+/g, " ").trim();
+    const tabs = meta.tabs();
+    const found = tabs.find((tab) => tab.id === name) ?? tabs.find((tab) => tab.name.toLowerCase() === name.toLowerCase());
+    if (found) return found.id;
+    // Not red, which marks a terminal that needs someone, nor grey: a colour no tab has yet, if one is left.
+    const colors = TAB_COLORS.filter((candidate) => candidate !== "#f14c4c" && candidate !== "#8b8b8b");
+    const used = new Set(tabs.map((tab) => tab.color));
+    const color = colors.find((candidate) => !used.has(candidate)) ?? colors[tabs.length % colors.length]!;
+    let id: string;
+    do id = randomBytes(4).toString("hex");
+    while (meta.hasTab(id));
+    meta.createTab({ id, name, color, grid: "2x2" });
+    broadcastTabs();
+    return id;
+  }
+
+  const control: Control = {
+    sessions: () => [...sessions.values()].sort((a, b) => a.createdAt - b.createdAt).map(view),
+    tabs: () => meta.tabs(),
+    create: (request: CreateRequest) =>
+      new Promise((resolve, reject) => {
+        if (!daemon.connected) {
+          reject(new Error("the daemon is not running (start it with `spectraweaver up`)"));
+          return;
+        }
+        const tab = request.tab?.trim() ? tabFor(request.tab) : undefined;
+        daemon.request(
+          { op: "create", cols: request.cols, rows: request.rows, cwd: request.cwd, cmd: request.cmd, tag: tab },
+          (response) => {
+            if (!response.ok) {
+              reject(new Error(response.error));
+              return;
+            }
+            const created = response.result as SessionInfo;
+            // Daemons older than the tab tag don't echo it.
+            if (tab && meta.tabOf(created.id) !== tab) meta.setSessionTab(created.id, tab, sessions.keys());
+            if (request.banner) meta.setBanner(created.id, request.banner.slice(0, 200));
+            broadcastSession(created.id);
+            resolve(view(sessions.get(created.id) ?? created));
+          },
+        );
+      }),
+    update: (id, patch) => {
+      const session = sessions.get(id);
+      if (!session) return null;
+      if (patch.banner !== undefined) meta.setBanner(id, patch.banner.slice(0, 200));
+      if (patch.tab?.trim()) meta.setSessionTab(id, tabFor(patch.tab), sessions.keys());
+      broadcastSession(id);
+      return view(session);
+    },
+  };
+
   const isAuthed = (request: Request) => {
     const value = readCookie(request, cookie);
     const expected = credentials.cookieValue();
@@ -638,6 +757,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
           return new Response(null, { status: 204, headers: { "Set-Cookie": cookieHeader(request, "", 0) } });
         },
       },
+      ...controlRoutes(control, () => credentials.token(), (request) => guard.check(request, false)),
       "/ws": (request, srv) => {
         if (!guard.check(request, true)) return new Response("forbidden", { status: 403 });
         if (!isAuthed(request)) return new Response("unauthorized", { status: 401 });
@@ -685,6 +805,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     },
     async stop() {
       clearInterval(revivalTimer);
+      clearInterval(statusTimer);
       daemon.stop();
       await server.stop(true);
       meta.flush();

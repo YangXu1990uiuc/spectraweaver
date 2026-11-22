@@ -77,6 +77,32 @@ export class Engine {
     return this.term.modes.sendFocusMode;
   }
 
+  get bracketedPaste(): boolean {
+    return this.term.modes.bracketedPasteMode;
+  }
+
+  get altScreen(): boolean {
+    return this.term.buffer.active.type === "alternate";
+  }
+
+  /**
+   * The text of the last `maxRows` rows, down to the bottom of the screen: one string per line,
+   * rows the terminal wrapped joined into the line they continue, trailing spaces dropped.
+   */
+  text(maxRows: number): string[] {
+    const buffer = this.term.buffer.active;
+    const lines: string[] = [];
+    for (let row = Math.max(0, buffer.length - maxRows); row < buffer.length; row++) {
+      const line = buffer.getLine(row);
+      if (!line) continue;
+      // A row that wraps on keeps its trailing spaces: they are part of the line.
+      const text = line.translateToString(!buffer.getLine(row + 1)?.isWrapped);
+      if (line.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    return lines;
+  }
+
   /** Call only when the engine has processed exactly the bytes the snapshot should cover. */
   serialize(): string {
     return this.serializer.serialize() + this.restoreSuffix();

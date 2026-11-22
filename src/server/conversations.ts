@@ -165,7 +165,7 @@ export class Conversations {
   }
 }
 
-type Line = Record<string, unknown>;
+export type Line = Record<string, unknown>;
 
 // Interactive sessions say where they came from: "cli", "claude-vscode", ...; Claude Code
 // marks print mode and SDK runs "sdk-…".
@@ -254,17 +254,17 @@ function scanHead(path: string, found: (line: Line) => boolean): void {
   }
 }
 
-/** The complete lines at the end of a JSON-lines file, parsed. */
-function tailLines(path: string): Line[] {
+/** The complete lines in the last `limit` bytes of a JSON-lines file, parsed. */
+export function tailLines(path: string, limit = TAIL_BYTES): Line[] {
   const size = statSync(path).size;
   let text: string;
-  if (size <= TAIL_BYTES) {
+  if (size <= limit) {
     text = readFileSync(path, "utf8");
   } else {
     const fd = openSync(path, "r");
     try {
-      const buffer = Buffer.alloc(TAIL_BYTES);
-      const bytes = readSync(fd, buffer, 0, TAIL_BYTES, size - TAIL_BYTES);
+      const buffer = Buffer.alloc(limit);
+      const bytes = readSync(fd, buffer, 0, limit, size - limit);
       text = buffer.toString("utf8", 0, bytes);
       text = text.slice(text.indexOf("\n") + 1); // the first line is cut off
     } finally {

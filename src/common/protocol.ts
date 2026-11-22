@@ -38,6 +38,21 @@ export interface Snapshot {
   data: string;
 }
 
+/** A terminal's text as plain lines, ending with the bottom of its screen (the "text" request). */
+export interface ScreenText {
+  session: string;
+  cols: number;
+  rows: number;
+  /** Rows the terminal wrapped are joined into one line; trailing spaces are dropped. */
+  lines: string[];
+  /** A full-screen program is showing (the alternate screen, which has no scrollback). */
+  altScreen: boolean;
+  /** The program asked for bracketed paste, so pasted text arrives marked as a paste. */
+  bracketedPaste: boolean;
+  /** When the program last printed anything, in ms since the epoch; null if it never has. */
+  lastOutputAt: number | null;
+}
+
 // ---- server -> daemon ------------------------------------------------------------------
 
 export type DaemonRequest =
@@ -50,6 +65,8 @@ export type DaemonRequest =
   | { op: "input"; session: string; data: string; binary?: boolean }
   | { op: "subscribe"; session: string }
   | { op: "snapshot"; session: string }
+  /** Answered with ScreenText: the last `lines` lines (the screen's rows by default), scrollback included. */
+  | { op: "text"; session: string; lines?: number }
   | { op: "unsubscribe"; session: string }
   | { op: "focus"; session: string; client: string; focused: boolean }
   | { op: "close"; session: string };
@@ -77,7 +94,7 @@ export interface HelloResult {
   protocol: number;
   version: string;
   pid: number;
-  /** Requests added since protocol 1's first set that this daemon answers ("resize"); older daemons send none. */
+  /** Requests added since protocol 1's first set that this daemon answers ("resize", "text"); older daemons send none. */
   features?: string[];
   /**
    * Different for every start of a daemon. A session missing from a new daemon's list was lost
@@ -96,6 +113,28 @@ export interface SessionView extends SessionInfo {
   color: string;
   /** Where its window sits while its tab lays terminals out as windows; absent until the user places it. */
   frame?: Frame;
+  /** The coding agent running in it and what it is doing; absent when none runs. */
+  agent?: AgentStatus;
+}
+
+/**
+ * What a coding agent is doing: working on a turn, idle at its prompt, waiting for someone to
+ * answer it (a permission prompt, a question), or stopped by an error it will not get past on
+ * its own (the model at capacity, a usage limit, a safety block). Unknown when neither the
+ * agent's files nor its screen tell.
+ */
+export type AgentActivity = "working" | "idle" | "waiting" | "stopped" | "unknown";
+
+export interface AgentStatus {
+  /** "claude" or "codex". */
+  name: string;
+  activity: AgentActivity;
+  /** Why it waits or stopped, in a few words: "at capacity", "needs approval". */
+  reason?: string;
+  /** The agent's own words for it, when it gave any. */
+  detail?: string;
+  /** Something wrong it works on despite ("cyber flag": rerouted to another model); shown like a stop. */
+  warning?: string;
 }
 
 /**

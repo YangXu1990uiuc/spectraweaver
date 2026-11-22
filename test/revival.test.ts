@@ -111,7 +111,13 @@ interface Launch {
   cwd: string;
 }
 const launches = (): Launch[] =>
-  existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line) as Launch) : [];
+  existsSync(log)
+    ? readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Launch)
+        .filter((entry) => "args" in entry)
+    : [];
 const meta = () =>
   JSON.parse(readFileSync(temp.paths.metaFile, "utf8")) as {
     sessions: Record<string, { revival?: { cwd: string; agent?: { name: string; conversation?: string } } }>;

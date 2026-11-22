@@ -25,6 +25,7 @@ Summarised from [DESIGN.md §9](DESIGN.md#9-security):
   - Origin and Host checks guard against CSRF, cross-site WebSocket hijacking and DNS rebinding.
   - Cookies are `HttpOnly` and `SameSite=Strict`.
   - The page refuses to run inside another site's frame.
+  - The command line's interface (`/api/v1/…`, used by `spectraweaver ls`, `new` and `banner`) takes the login token in an `Authorization` header, which a web page cannot send to another origin without a CORS preflight that the server never answers.
 - **Hostile terminal output.**
   - Output is rendered as text, never as HTML.
   - Only `http` and `https` links open.
