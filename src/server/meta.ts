@@ -21,7 +21,7 @@ interface SessionMeta {
   color?: string;
   /** The session's window in its tab; absent until the user places it. */
   frame?: Frame;
-  /** Its window is put away in the tab's taskbar. */
+  /** Its window is put away, to come back from its task on the tab's board. */
   hidden?: true;
   /** What would bring the terminal back, noted while it runs. */
   revival?: Revival;
@@ -176,7 +176,7 @@ export class MetaStore {
     return this.data.sessions[sessionId]?.hidden === true;
   }
 
-  /** Puts a session's window away in the taskbar, or brings it back. */
+  /** Puts a session's window away, or brings it back. */
   setHidden(sessionId: string, hidden: boolean): void {
     if (this.hiddenOf(sessionId) === hidden) return;
     this.patchSession(sessionId, { hidden: hidden ? true : undefined });

@@ -4,6 +4,7 @@
 
 import { TAB_COLORS, type TabView } from "../common/protocol.ts";
 import { el } from "./dom.ts";
+import { closeMenu, openMenu } from "./menu.ts";
 
 /** Drag type for moving a session's tile onto a tab. */
 export const SESSION_DRAG_TYPE = "application/x-spectraweaver-session";
@@ -43,7 +44,6 @@ export class TabStrip {
   private readonly list: HTMLDivElement;
   private state: TabStripState = { tabs: [], activeId: null, counts: new Map(), alerts: new Set() };
   private readonly items = new Map<string, TabItem>();
-  private menu: HTMLDivElement | null = null;
   private editing: string | null = null;
   private renameWhenShown: string | null = null;
 
@@ -62,16 +62,6 @@ export class TabStrip {
       },
       { passive: false },
     );
-    document.addEventListener(
-      "pointerdown",
-      (event) => {
-        if (this.menu && !this.menu.contains(event.target as Node)) this.closeMenu();
-      },
-      true,
-    );
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") this.closeMenu();
-    });
   }
 
   /** Starts renaming the tab once it appears (after the server confirms it). */
@@ -183,7 +173,7 @@ export class TabStrip {
     const item = this.list.querySelector<HTMLElement>(`.tab[data-id="${id}"]`);
     const tab = this.state.tabs.find((candidate) => candidate.id === id);
     if (!item || !tab) return;
-    this.closeMenu();
+    closeMenu();
     this.editing = id;
     const input = el("input", { class: "tab-rename", value: tab.name, maxlength: "60", spellcheck: "false" });
     item.draggable = false;
@@ -212,16 +202,6 @@ export class TabStrip {
   }
 
   private openMenu(tab: TabView, x: number, y: number): void {
-    this.closeMenu();
-    const item = (label: string, action: () => void, disabled = false) => {
-      const button = el("button", { class: "item" }, [label]);
-      button.disabled = disabled;
-      button.addEventListener("click", () => {
-        this.closeMenu();
-        action();
-      });
-      return button;
-    };
     const swatches = el(
       "div",
       { class: "swatches" },
@@ -229,28 +209,22 @@ export class TabStrip {
         const swatch = el("button", { class: color === tab.color ? "swatch selected" : "swatch", title: color });
         swatch.style.background = `color-mix(in srgb, ${color} 50%, white)`; // the tint the tab gets
         swatch.addEventListener("click", () => {
-          this.closeMenu();
+          closeMenu();
           this.handlers.recolor(tab.id, color);
         });
         return swatch;
       }),
     );
-    const menu = el("div", { class: "menu", role: "menu" }, [
-      item("Rename", () => this.startRename(tab.id)),
-      swatches,
-      item("Show board", () => this.handlers.showBoard(tab.id)),
-      item("Open in new window", () => this.handlers.openInWindow(tab.id)),
-      item("Delete tab…", () => this.handlers.remove(tab.id), this.state.tabs.length <= 1),
-    ]);
-    document.body.appendChild(menu);
-    const rect = menu.getBoundingClientRect();
-    menu.style.left = `${Math.min(x, window.innerWidth - rect.width - 8)}px`;
-    menu.style.top = `${Math.min(y, window.innerHeight - rect.height - 8)}px`;
-    this.menu = menu;
-  }
-
-  private closeMenu(): void {
-    this.menu?.remove();
-    this.menu = null;
+    openMenu(
+      [
+        { label: "Rename", action: () => this.startRename(tab.id) },
+        swatches,
+        { label: "Show board", action: () => this.handlers.showBoard(tab.id) },
+        { label: "Open in new window", action: () => this.handlers.openInWindow(tab.id) },
+        { label: "Delete tab…", action: () => this.handlers.remove(tab.id), disabled: this.state.tabs.length <= 1 },
+      ],
+      x,
+      y,
+    );
   }
 }

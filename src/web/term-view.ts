@@ -39,6 +39,8 @@ export interface TermViewOptions {
   onFocusChange(focused: boolean): void;
   /** Shows the user a short message. */
   notify(message: string): void;
+  /** Files pasted without text (a screenshot): uploaded, and their paths typed in. */
+  upload(files: File[]): void;
 }
 
 /**
@@ -190,6 +192,12 @@ export class TermView {
   }
 
   focus(): void {
+    this.term.focus();
+  }
+
+  /** Types text in as a paste (bracketed, where the program asked for that), then takes the focus. */
+  pasteText(text: string): void {
+    this.term.paste(sanitizePaste(text));
     this.term.focus();
   }
 
@@ -449,6 +457,15 @@ export class TermView {
 
   private onPaste(event: ClipboardEvent): void {
     const text = event.clipboardData?.getData("text/plain");
+    const files = [...(event.clipboardData?.files ?? [])];
+    // A screenshot or a copied file comes without text: it is uploaded, and its path typed in.
+    // Anything with text (a copied web page carries both) pastes as text.
+    if (!text && files.length > 0) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      this.options.upload(files);
+      return;
+    }
     if (!text) return;
     event.preventDefault();
     event.stopImmediatePropagation();

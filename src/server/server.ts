@@ -15,6 +15,7 @@ import {
   type Frame,
   type DaemonEvent,
   type LostSession,
+  MAX_UPLOAD_BYTES,
   type ScreenText,
   type ServerMessage,
   type SessionInfo,
@@ -45,6 +46,7 @@ import { foregroundProcess, processCwd } from "./foreground.ts";
 import { cleanName, MetaStore } from "./meta.ts";
 import { observe, type RevivalDeps } from "./revival.ts";
 import { AgentStatusReader } from "./status.ts";
+import { saveUpload, uploadDir } from "./uploads.ts";
 
 export interface ServerOptions {
   paths: Paths;
@@ -62,6 +64,8 @@ export interface ServerOptions {
   statusQuietMs?: number;
   /** Where Claude Code and Codex keep their conversations; from the environment by default. */
   agentDirs?: AgentDirs;
+  /** Where files uploaded from the browser go; uploadDir() by default. */
+  uploadDir?: string;
 }
 
 export interface ServerHandle {
@@ -87,6 +91,8 @@ interface Fan {
 
 // A browser that cannot keep up is disconnected; it reconnects and gets fresh snapshots.
 const MAX_CLIENT_BACKLOG = 32 * 1024 * 1024;
+/** The JSON a sign-in or a password change sends is tiny; larger bodies are not read. */
+const MAX_JSON_BYTES = 64 * 1024;
 const REVIVAL_EVERY_MS = 15_000;
 const STATUS_EVERY_MS = 2000;
 /** The rows of a terminal's screen read to tell what its agent shows. */
@@ -423,6 +429,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       case "session-hidden": {
         const id = String(message.session);
         if (!sessions.has(id)) return;
+        // A window is put away only where the board brings it back.
+        if (message.hidden === true && !meta.board(meta.tabOf(id))) return;
         meta.setHidden(id, message.hidden === true);
         broadcastSession(id);
         return;
@@ -724,7 +732,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
             // Daemons older than the tab tag don't echo it.
             if (tab && meta.tabOf(created.id) !== tab) meta.setSessionTab(created.id, tab, sessions.keys());
             if (request.banner) meta.setBanner(created.id, request.banner.slice(0, 200));
-            // A tab with a board shows the board and its lead; the workers wait in the taskbar.
+            // A tab with a board shows the board and its lead; the workers start put away, behind their tasks.
             if (tab && meta.board(tab) && !request.show) meta.setHidden(created.id, true);
             broadcastSession(created.id);
             resolve(view(sessions.get(created.id) ?? created));
@@ -734,6 +742,15 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     update: (id, patch) => {
       const session = sessions.get(id);
       if (!session) return null;
+      if (patch.hidden === true) {
+        const tab = patch.tab?.trim() ? findTab(patch.tab) : meta.tabs().find((candidate) => candidate.id === meta.tabOf(id));
+        if (!tab?.board) {
+          throw new Error(
+            `terminal ${id} would be put away in a tab without a board, and only a board brings a window back; ` +
+              "a tab gets one with `spectraweaver board set`",
+          );
+        }
+      }
       if (patch.banner !== undefined) meta.setBanner(id, patch.banner.slice(0, 200));
       if (patch.tab?.trim()) meta.setSessionTab(id, tabFor(patch.tab), sessions.keys());
       if (patch.hidden !== undefined) {
@@ -760,7 +777,15 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     clearBoard: (name) => {
       const tab = findTab(name);
       if (!tab) return null;
-      if (meta.clearBoard(tab.id)) broadcastTabs();
+      if (meta.clearBoard(tab.id)) {
+        // Nothing brings a window back without a board: the tab's windows put away come out.
+        for (const id of sessions.keys()) {
+          if (meta.tabOf(id) !== tab.id || !meta.hiddenOf(id)) continue;
+          meta.setHidden(id, false);
+          broadcastSession(id);
+        }
+        broadcastTabs();
+      }
       return meta.tabs().find((candidate) => candidate.id === tab.id) ?? null;
     },
   };
@@ -785,7 +810,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
 
   /**
    * A tab's first board: the board takes the left of the tab and the terminal that pushed it the
-   * right, in front; the terminals the board assigns tasks to are put away in the taskbar.
+   * right, in front; the terminals the board assigns tasks to are put away, to come out from their tasks.
    */
   function layOutForBoard(tab: string, board: Board): void {
     const top = topOfTab(tab);
@@ -823,8 +848,11 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     return new Response(null, { status: 204, headers: { "Set-Cookie": cookieHeader(request, value, 31_536_000) } });
   };
 
+  // A sign-in or a password: small, and read before anyone is known, so a large body is not read.
   const readJson = async (request: Request) =>
-    ((await request.json().catch(() => null)) ?? {}) as Record<string, unknown>;
+    Number(request.headers.get("content-length") ?? 0) > MAX_JSON_BYTES
+      ? {}
+      : (((await request.json().catch(() => null)) ?? {}) as Record<string, unknown>);
 
   const server = Bun.serve({
     hostname: options.host,
@@ -891,6 +919,32 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
           return new Response(null, { status: 204, headers: { "Set-Cookie": cookieHeader(request, "", 0) } });
         },
       },
+      // A file dropped on a terminal or pasted into it: the body is the file, its name (URI-encoded)
+      // in X-File-Name. Answers the path it was written to, which the browser types in.
+      "/api/upload": {
+        POST: async (request) => {
+          if (!guard.check(request, true)) return new Response("forbidden", { status: 403 });
+          if (!isAuthed(request)) return new Response("unauthorized", { status: 401 });
+          // Read before it is judged: a reply sent while the browser is still sending can leave the
+          // connection hanging. maxRequestBodySize bounds what is read.
+          const bytes = new Uint8Array(await request.arrayBuffer());
+          if (bytes.length === 0) return new Response("the file is empty", { status: 400 });
+          if (bytes.length > MAX_UPLOAD_BYTES) return new Response(`files up to ${MAX_UPLOAD_BYTES / 1024 / 1024} MB`, { status: 413 });
+          let name = "";
+          try {
+            name = decodeURIComponent(request.headers.get("x-file-name") ?? "");
+          } catch {
+            // a name that is not valid URI encoding: none
+          }
+          try {
+            const path = saveUpload(options.uploadDir ?? uploadDir(), bytes, name, request.headers.get("content-type") ?? "");
+            return Response.json({ path });
+          } catch (error) {
+            log(`upload failed: ${(error as Error).message}`);
+            return new Response((error as Error).message, { status: 500 });
+          }
+        },
+      },
       ...controlRoutes(control, () => credentials.token(), (request) => guard.check(request, false)),
       "/ws": (request, srv) => {
         if (!guard.check(request, true)) return new Response("forbidden", { status: 403 });
@@ -901,8 +955,8 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       },
     },
     fetch: () => new Response("not found", { status: 404 }),
-    // Bodies are small JSON: a sign-in, a board of at most 500 tasks.
-    maxRequestBodySize: 4 * 1024 * 1024,
+    // Bodies are small JSON (a sign-in, a board of at most 500 tasks), or an upload.
+    maxRequestBodySize: MAX_UPLOAD_BYTES + 64 * 1024,
     websocket: {
       data: {} as ClientData,
       backpressureLimit: MAX_CLIENT_BACKLOG,

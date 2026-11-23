@@ -188,7 +188,7 @@ test("a tab's board, its window, and windows put away are kept", () => {
   expect(again.setBoardWindow(tab, { direction: "auto" })).toBe(true);
   expect(again.tabs()[0]!.boardWindow?.direction).toBeUndefined();
   expect(again.hiddenOf("s1")).toBe(true);
-  // A window moved to another tab comes out of the taskbar there.
+  // A window moved to another tab comes out there.
   expect(again.createTab({ id: "bbbbbbbb", name: "other", color: "#2ea043", grid: "2x2" })).toBe(true);
   again.setSessionTab("s1", "bbbbbbbb");
   expect(again.hiddenOf("s1")).toBe(false);

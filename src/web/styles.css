@@ -285,8 +285,11 @@ code {
 }
 
 .menu .item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
+  max-width: 420px;
   padding: 5px 10px;
   text-align: left;
   background: transparent;
@@ -296,6 +299,42 @@ code {
 
 .menu .item:hover:not(:disabled) {
   background: #094771;
+}
+
+.menu .item:disabled {
+  color: var(--muted);
+}
+
+.menu .item.danger {
+  color: #f48771;
+}
+
+.menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: #454545;
+}
+
+.menu-swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.menu-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.menu-note {
+  flex: none;
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .swatches {
@@ -377,6 +416,12 @@ code {
 .tile.asking {
   border-color: #f5a623;
   box-shadow: 0 0 0 1px #f5a623;
+}
+
+/* Files dragged over a terminal's window: dropped, they are uploaded and their paths typed in. */
+.tile.file-drop {
+  outline: 2px dashed var(--link);
+  outline-offset: -3px;
 }
 
 .tile-header {
@@ -943,72 +988,6 @@ dialog section {
   background: #232323;
 }
 
-/* ---- taskbar: the tab's windows, put away or not ---- */
-
-.taskbar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  height: 32px;
-  padding: 0 6px;
-  overflow-x: auto;
-  scrollbar-width: thin;
-  background: var(--panel);
-  border-top: 1px solid var(--border);
-}
-
-.task-chip {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 260px;
-  height: 24px;
-  padding: 0 8px;
-  color: var(--muted);
-  background: transparent;
-  border: 1px solid transparent;
-  border-bottom-width: 2px;
-}
-
-.task-chip.open {
-  color: var(--text);
-  background: #2a2a2a;
-  border-color: #3a3a3a;
-}
-
-.task-chip.front {
-  border-bottom-color: var(--link);
-}
-
-.chip-swatch {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-}
-
-.task-chip:not(.open) .chip-swatch {
-  opacity: 0.45;
-}
-
-.chip-label {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.task-chip .badge.agent {
-  max-width: none;
-}
-
-.badge.agent.bell {
-  padding: 0;
-  color: var(--alert);
-  background: transparent;
-}
-
 /* ---- the task board's window ---- */
 
 .board-window .tile-header {
@@ -1087,6 +1066,23 @@ dialog section {
 
 .board-lead .badge.agent {
   max-width: none;
+}
+
+/* Terminals put away that no task names: the board is the only way back to them. */
+.board-off {
+  padding: 1px 8px;
+  font-size: 12px;
+  border-radius: 10px;
+}
+
+.board-off.alarm {
+  border-color: var(--alert);
+  box-shadow: 0 0 0 1px var(--alert);
+}
+
+.board-off.asking {
+  border-color: #f5a623;
+  box-shadow: 0 0 0 1px #f5a623;
 }
 
 /* The graph's viewport: a drag on its background pans, Ctrl + wheel zooms. */

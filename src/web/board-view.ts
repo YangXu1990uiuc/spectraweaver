@@ -5,12 +5,14 @@
 // A tab's task board as a window (DESIGN.md §8.7): the tasks a coordinating agent pushed, as a
 // graph of what waits for what, each card coloured by the status the agent gave it and marked
 // with the live state of the terminal working on it. A click shows a task's details; a double
-// click opens its terminal. The window moves, resizes and goes to the taskbar like a terminal's.
+// click opens its terminal, and a right click has the rest (put it away, end it). The window
+// moves and resizes like a terminal's, but stays open while the tab has a board.
 
 import type { BoardDirection, BoardTask, Frame, SessionView, TabView, TaskStatus } from "../common/protocol.ts";
 import { type BoardLayout, type Direction, fitScale, layoutBoard, pickLayout, type Size } from "./board-layout.ts";
-import { type TaskLive, taskLive } from "./board-live.ts";
+import { agentLive, type TaskLive, taskLive } from "./board-live.ts";
 import { ago, el, loadSetting, saveSetting } from "./dom.ts";
+import { type MenuEntry, openMenu } from "./menu.ts";
 import { WindowChrome } from "./window-chrome.ts";
 
 const CARD: Size = { width: 192, height: 60 };
@@ -64,9 +66,12 @@ export interface BoardWindowOptions {
   snap(): boolean;
   /** A task was double-clicked: show its terminal, or say why not. */
   openTerminal(task: BoardTask): void;
-  /** Show a terminal (the lead's). */
+  /** Show a terminal (the lead's, or one put away that no task names). */
   showTerminal(sessionId: string): void;
-  hide(): void;
+  /** What a right click on a terminal's task (or the lead) offers. */
+  terminalMenu(sessionId: string): MenuEntry[];
+  /** Closes the window of a tab with no board yet. */
+  close(): void;
   /** Which way the graph runs, for every browser; "auto" lets the window's shape decide. */
   setDirection(direction: BoardDirection | "auto"): void;
   commit(frame: Frame): void;
@@ -106,6 +111,8 @@ export class BoardWindow {
   private readonly doneText: HTMLSpanElement;
   private readonly updated: HTMLSpanElement;
   private readonly leadButton: HTMLButtonElement;
+  private readonly offBoardButton: HTMLButtonElement;
+  private readonly closeButton: HTMLButtonElement;
   private readonly zoomLabel: HTMLButtonElement;
   private readonly directionButton: HTMLButtonElement;
   private readonly graph: HTMLDivElement;
@@ -142,15 +149,16 @@ export class BoardWindow {
     this.title = el("span", { class: "board-name" });
     this.redCount = el("span", { class: "badge agent stopped", hidden: "" });
     this.amberCount = el("span", { class: "badge agent waiting", hidden: "" });
-    const hideButton = el("button", { class: "icon-btn", title: "Put away in the taskbar" }, ["—"]);
-    hideButton.addEventListener("click", () => options.hide());
+    // Only an empty board closes: one with tasks is how the tab's windows put away come back.
+    this.closeButton = el("button", { class: "icon-btn", title: "Close" }, ["✕"]);
+    this.closeButton.addEventListener("click", () => options.close());
     const header = el("div", { class: "tile-header" }, [
       el("span", { class: "board-icon", "aria-hidden": "true" }, ["▦"]),
       this.title,
       el("span", { class: "spacer" }),
       this.redCount,
       this.amberCount,
-      hideButton,
+      this.closeButton,
     ]);
 
     this.progress = el("span", { class: "board-progress", role: "img" });
@@ -160,6 +168,27 @@ export class BoardWindow {
     this.leadButton.addEventListener("click", () => {
       const lead = this.tab.board?.lead;
       if (lead) options.showTerminal(lead);
+    });
+    this.leadButton.addEventListener("contextmenu", (event) => {
+      const lead = this.tab.board?.lead;
+      if (!lead) return;
+      event.preventDefault();
+      openMenu(options.terminalMenu(lead), event.clientX, event.clientY);
+    });
+    this.offBoardButton = el("button", { class: "board-off", hidden: "" });
+    this.offBoardButton.addEventListener("click", () => {
+      const rect = this.offBoardButton.getBoundingClientRect();
+      const now = Date.now();
+      openMenu(
+        this.offBoard().map((session) => ({
+          label: session.banner || session.title || session.id,
+          color: session.color,
+          note: session.exited ? "exited" : session.agent ? agentLive("", session.agent, now).text : undefined,
+          action: () => options.showTerminal(session.id),
+        })),
+        rect.left,
+        rect.bottom + 4,
+      );
     });
     const zoomOut = el("button", { class: "icon-btn", title: "Zoom out (Ctrl + − or Ctrl + wheel)", "aria-label": "Zoom out" }, ["−"]);
     const zoomIn = el("button", { class: "icon-btn", title: "Zoom in (Ctrl + = or Ctrl + wheel)", "aria-label": "Zoom in" }, ["+"]);
@@ -177,6 +206,7 @@ export class BoardWindow {
       this.doneText,
       el("span", { class: "spacer" }),
       this.updated,
+      this.offBoardButton,
       this.leadButton,
       el("span", { class: "board-view" }, [this.directionButton, zoomOut, this.zoomLabel, zoomIn]),
     ]);
@@ -309,6 +339,7 @@ export class BoardWindow {
       tab.boardWindow?.direction,
       board?.lead ? shownState(sessions.get(board.lead)) : null,
       (board?.tasks ?? []).map((task) => (task.session ? shownState(sessions.get(task.session)) : null)),
+      this.offBoard().map((session) => [session.id, shownState(session)]),
     ]);
     if (shown === this.shown) return;
     this.shown = shown;
@@ -318,6 +349,16 @@ export class BoardWindow {
   /** Times shown relative to now ("3 min ago", "idle 12m") move on. */
   refresh(): void {
     this.render();
+  }
+
+  /** The tab's terminals put away that neither a task nor the lead button brings back. */
+  private offBoard(): SessionView[] {
+    const board = this.tab.board;
+    if (!board) return [];
+    const named = new Set(board.tasks.flatMap((task) => (task.session ? [task.session] : [])));
+    return [...this.sessions.values()]
+      .filter((session) => session.tab === this.tab.id && session.hidden && session.id !== board.lead && !named.has(session.id))
+      .sort((a, b) => a.createdAt - b.createdAt);
   }
 
   dispose(): void {
@@ -334,6 +375,7 @@ export class BoardWindow {
     this.graph.hidden = !board;
     this.detail.hidden = !board;
     this.empty.hidden = board !== undefined;
+    this.closeButton.hidden = board !== undefined;
     if (!board) {
       this.redCount.hidden = this.amberCount.hidden = true;
       return;
@@ -385,8 +427,17 @@ export class BoardWindow {
         this.leadButton.dataset.shown = `${name}\n${text}\n${live?.kind}`;
         this.leadButton.replaceChildren(name, el("span", { class: `badge agent ${live?.kind ?? "idle"}` }, [text]));
       }
-      this.leadButton.title = "Show the lead's terminal";
+      this.leadButton.title = "Show the lead's terminal (right-click for more)";
       this.leadButton.classList.toggle("alarm", live?.alarm === "red");
+    }
+    const off = this.offBoard();
+    this.offBoardButton.hidden = off.length === 0;
+    if (off.length > 0) {
+      const alarms = off.map((session) => (session.agent ? agentLive("", session.agent, now).alarm : undefined));
+      this.offBoardButton.textContent = `+${off.length} off the board`;
+      this.offBoardButton.title = `${off.length === 1 ? "A terminal" : `${off.length} terminals`} put away that no task names: click to bring one out`;
+      this.offBoardButton.classList.toggle("alarm", alarms.includes("red"));
+      this.offBoardButton.classList.toggle("asking", !alarms.includes("red") && alarms.includes("amber"));
     }
   }
 
@@ -562,6 +613,15 @@ export class BoardWindow {
     const card = el("button", { class: "task", type: "button" });
     card.addEventListener("click", () => this.select(id));
     card.addEventListener("dblclick", () => this.open(id));
+    card.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      this.select(id);
+      const session = this.tab.board?.tasks.find((task) => task.id === id)?.session;
+      const entries: MenuEntry[] = session
+        ? this.options.terminalMenu(session)
+        : [{ label: `No terminal works on ${id}`, action: () => {}, disabled: true }];
+      openMenu(entries, event.clientX, event.clientY);
+    });
     card.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
       event.preventDefault();
@@ -588,7 +648,9 @@ export class BoardWindow {
     const task = this.selected ? board.tasks.find((candidate) => candidate.id === this.selected) : undefined;
     if (!task) {
       this.detail.replaceChildren(
-        el("span", { class: "board-muted" }, ["Click a task to see it; double-click to open its terminal."]),
+        el("span", { class: "board-muted" }, [
+          "Click a task to see it; double-click to open its terminal; right-click to put it away or terminate it.",
+        ]),
       );
       return;
     }

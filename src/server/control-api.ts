@@ -7,7 +7,7 @@
 // as the same user and reads it from the token file, and a web page cannot send the header
 // without a CORS preflight, which the server never answers.
 
-import type { SessionView, TabView } from "../common/protocol.ts";
+import { NEW_TERMINAL_SIZE, type SessionView, type TabView } from "../common/protocol.ts";
 import { safeEqual } from "./auth.ts";
 import { BoardError } from "./board.ts";
 
@@ -20,9 +20,11 @@ export interface CreateRequest {
   cmd?: string;
   cols: number;
   rows: number;
-  /** Show its window even in a tab with a board, where new terminals start put away in the taskbar. */
+  /** Show its window even in a tab with a board, where new terminals start put away. */
   show?: boolean;
 }
+
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 export interface BoardResult {
   /** The tab, with its board. */
@@ -35,7 +37,10 @@ export interface Control {
   sessions(): SessionView[];
   tabs(): TabView[];
   create(request: CreateRequest): Promise<SessionView>;
-  /** Changes a terminal's banner or tab, or puts its window away; null if there is no such terminal. */
+  /**
+   * Changes a terminal's banner or tab, or puts its window away (only in a tab with a board, which
+   * brings it back; an Error says so otherwise); null if there is no such terminal.
+   */
   update(id: string, patch: { banner?: string; tab?: string; hidden?: boolean }): SessionView | null;
   /** A tab, with its board if it has one; null if no tab has that name or id. */
   board(tab: string): TabView | null;
@@ -45,7 +50,6 @@ export interface Control {
   clearBoard(tab: string): TabView | null;
 }
 
-const DEFAULT_SIZE = { cols: 120, rows: 36 };
 
 export function controlRoutes(control: Control, token: () => string | null, hostAllowed: (request: Request) => boolean) {
   const authorized = (request: Request): Response | null => {
@@ -55,7 +59,9 @@ export function controlRoutes(control: Control, token: () => string | null, host
     if (!expected || !given || !safeEqual(given, expected)) return new Response("unauthorized", { status: 401 });
     return null;
   };
+  // A board of 500 tasks is about 1.3 MB; the server takes larger bodies only as uploads.
   const body = async (request: Request) => {
+    if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) return {} as Record<string, unknown>;
     const value = (await request.json().catch(() => null)) as unknown;
     return (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
   };
@@ -77,8 +83,8 @@ export function controlRoutes(control: Control, token: () => string | null, host
             banner: string(input.banner),
             cwd: string(input.cwd),
             cmd: string(input.cmd),
-            cols: typeof input.cols === "number" ? input.cols : DEFAULT_SIZE.cols,
-            rows: typeof input.rows === "number" ? input.rows : DEFAULT_SIZE.rows,
+            cols: typeof input.cols === "number" ? input.cols : NEW_TERMINAL_SIZE.cols,
+            rows: typeof input.rows === "number" ? input.rows : NEW_TERMINAL_SIZE.rows,
             show: input.show === true,
           });
           return Response.json({ session });
@@ -92,12 +98,16 @@ export function controlRoutes(control: Control, token: () => string | null, host
         const refused = authorized(request);
         if (refused) return refused;
         const input = await body(request);
-        const session = control.update(request.params.id, {
-          banner: string(input.banner),
-          tab: string(input.tab),
-          hidden: typeof input.hidden === "boolean" ? input.hidden : undefined,
-        });
-        return session ? Response.json({ session }) : new Response(`no such session: ${request.params.id}`, { status: 404 });
+        try {
+          const session = control.update(request.params.id, {
+            banner: string(input.banner),
+            tab: string(input.tab),
+            hidden: typeof input.hidden === "boolean" ? input.hidden : undefined,
+          });
+          return session ? Response.json({ session }) : new Response(`no such session: ${request.params.id}`, { status: 404 });
+        } catch (error) {
+          return failed(error);
+        }
       },
     },
     // The tab goes in the query (?tab=NAME), as names may hold any character.

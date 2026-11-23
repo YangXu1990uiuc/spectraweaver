@@ -57,11 +57,24 @@ board on the left and the pushing terminal on the right.
 Workers' terminals (run from a terminal in the tab, they land in it):
   spectraweaver new --banner "T2: refresh API" --cwd DIR -- claude
                         prints the new terminal's id; in a tab with a board it starts put
-                        away in the taskbar (--show to show it)
-  spectraweaver send ID "the task, and where to report back"
-  spectraweaver ls --json            what every terminal's agent is doing
-  spectraweaver read ID              a terminal's screen
+                        away, and the person opens it from its task (--show to show it)
+  spectraweaver send ID "read tasks/T2/BRIEF.md; write tasks/T2/REPORT.md when done"
+  spectraweaver ls [--json]          what every terminal's agent is doing
+  spectraweaver read ID [--lines N]  a terminal's screen as text (N: its last N lines)
+  spectraweaver wait ID... [--timeout 30m]
+                        returns once one of them stops working: idle, waiting, stopped, exited
   spectraweaver show ID              bring a terminal in front of the person
+
+Pass work and results through files, not send: a folder per task with its brief and a
+REPORT.md the worker writes, say. Text sent to a terminal is typed into its input box, in the
+middle of whatever a person is typing there, and goes off with the person's half-written
+message. So send a worker its task once, and after that only to get an agent going again that
+stopped (at capacity, rate limited, an error) and will not look at its files until told to go
+on. Workers should not send their reports into your terminal: you read their files.
+
+Look in on the workers now and then (ls, their files, read) to catch one going off track, or
+one that needs news from another. wait blocks until one stops, for when there is nothing else
+to do; run it in the background if your tools time out.
 `;
 
 export async function cmdBoard(args: string[]): Promise<void> {

@@ -4,13 +4,14 @@
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Paths } from "../src/common/paths.ts";
 import {
   type ClientMessage,
   decodeOutputPayload,
+  MAX_UPLOAD_BYTES,
   type ServerMessage,
   type SessionView,
   type Snapshot,
@@ -19,6 +20,7 @@ import {
 import { type DaemonHandle, startDaemon } from "../src/daemon/daemon.ts";
 import { processCwd } from "../src/server/foreground.ts";
 import { type ServerHandle, startServer } from "../src/server/server.ts";
+import { uploadDir } from "../src/server/uploads.ts";
 import { TEST_SHELL, tempPaths, until } from "./helpers.ts";
 
 let paths: Paths;
@@ -27,9 +29,12 @@ let daemon: DaemonHandle;
 let server: ServerHandle;
 let base: string;
 let cookie: string;
+/** Where the server writes uploads: inside the test's own directory, not the real one in /tmp. */
+let uploads: string;
 
 async function launchServer(): Promise<void> {
-  server = await startServer({ paths, host: "127.0.0.1", port: 0, log: () => {} });
+  uploads = uploadDir(dirname(paths.configDir));
+  server = await startServer({ paths, host: "127.0.0.1", port: 0, log: () => {}, uploadDir: uploads });
   base = `http://127.0.0.1:${server.port}`;
 }
 
@@ -393,4 +398,33 @@ test("a new terminal can start in the current directory of another one", async (
   }
   tab.close();
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("a file dropped or pasted in a browser is written where the terminals run, for this user only", async () => {
+  const upload = (body: Uint8Array<ArrayBuffer>, headers: Record<string, string> = {}) =>
+    fetch(`${base}/api/upload`, {
+      method: "POST",
+      headers: { origin: base, cookie, "content-type": "image/png", "x-file-name": encodeURIComponent("Screen shot 1.png"), ...headers },
+      body,
+    });
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+  expect((await upload(png, { cookie: "" })).status).toBe(401);
+  expect((await upload(png, { origin: "https://evil.example" })).status).toBe(403);
+  expect((await upload(new Uint8Array(0))).status).toBe(400);
+  expect((await upload(new Uint8Array(MAX_UPLOAD_BYTES + 1))).status).toBe(413);
+
+  const response = await upload(png);
+  expect(response.status).toBe(200);
+  const { path } = (await response.json()) as { path: string };
+  expect(dirname(path)).toBe(uploads);
+  // Named so a command line takes it as it is: the time, the name made safe, random letters.
+  expect(basename(path)).toMatch(/^\d{8}-\d{6}-Screen-shot-1-[0-9a-f]{6}\.png$/);
+  expect(new Uint8Array(readFileSync(path))).toEqual(png);
+  expect(statSync(path).mode & 0o777).toBe(0o600);
+  expect(statSync(uploads).mode & 0o777).toBe(0o700);
+  // A pasted screenshot may have no name, or one of letters a command line would mangle.
+  const unnamed = (await (await upload(png, { "x-file-name": "", "content-type": "image/jpeg" })).json()) as { path: string };
+  expect(basename(unnamed.path)).toMatch(/-upload-[0-9a-f]{6}\.jpg$/);
+  const chinese = (await (await upload(png, { "x-file-name": encodeURIComponent("截图 (2).png") })).json()) as { path: string };
+  expect(basename(chinese.path)).toMatch(/-2-[0-9a-f]{6}\.png$/);
 });

@@ -23,7 +23,8 @@ export interface NewTerminalContext {
 }
 
 /** The text size the user prefers, learned from the sizes they create. */
-function preferredTextPx(): number {
+/** The text size the person prefers, learned from the sizes they create. */
+export function preferredTextPx(): number {
   const value = Number(loadSetting("textPx", String(DEFAULT_TEXT_PX)));
   return Number.isFinite(value) ? Math.min(MAX_TEXT_PX, Math.max(MIN_TEXT_PX, value)) : DEFAULT_TEXT_PX;
 }

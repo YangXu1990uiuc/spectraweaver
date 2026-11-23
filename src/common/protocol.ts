@@ -17,6 +17,16 @@ export const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 /** The sizes the daemon accepts, when creating a session and when resizing one. */
 export const SIZE_LIMITS = { minCols: 2, maxCols: 1000, minRows: 1, maxRows: 500 } as const;
 
+/**
+ * A terminal `spectraweaver new` opens without --size. Large, as it starts put away and is read
+ * mostly as text (`spectraweaver read`), where a bigger screen shows more; a window that shows it
+ * fits the text to the window.
+ */
+export const NEW_TERMINAL_SIZE = { cols: 160, rows: 48 } as const;
+
+/** The largest file a browser may upload into a terminal (POST /api/upload). */
+export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
 export interface SessionInfo {
   id: string;
   cmd: string | null;
@@ -115,7 +125,10 @@ export interface SessionView extends SessionInfo {
   frame?: Frame;
   /** The coding agent running in it and what it is doing; absent when none runs. */
   agent?: AgentStatus;
-  /** Its window is put away in the tab's taskbar (the "—" button); it keeps running. */
+  /**
+   * Its window is put away (× in a tab with a board); it keeps running, and comes back from its
+   * task on the board. Only a tab with a board puts windows away.
+   */
   hidden?: boolean;
   /** Its shell waits at a prompt: no program runs in it. Absent when unknown. */
   atPrompt?: boolean;
@@ -221,8 +234,8 @@ export interface TabView {
   /** The task board a coordinating agent keeps for this tab (`spectraweaver board set`). */
   board?: Board;
   /**
-   * The board's window: where it sits, whether it is open or put away in the taskbar, and which
-   * way its graph runs (absent: whichever way fits the window better).
+   * The board's window: where it sits, whether it is open (always, while the tab has a board), and
+   * which way its graph runs (absent: whichever way fits the window better).
    */
   boardWindow?: { open: boolean; frame?: Frame; direction?: BoardDirection };
 }
@@ -289,9 +302,9 @@ export type ClientMessage =
   | { t: "session-move"; session: string; tab: string }
   /** Places or restacks a terminal's window; the server checks it with normalizeFrame. */
   | { t: "session-frame"; session: string; frame: Frame }
-  /** Puts a terminal's window away in the taskbar, or brings it back. */
+  /** Puts a terminal's window away (only in a tab with a board), or brings it back. */
   | { t: "session-hidden"; session: string; hidden: boolean }
-  /** Opens, puts away, places or restacks a tab's board window, or sets which way its graph runs. */
+  /** Opens, closes, places or restacks a tab's board window, or sets which way its graph runs. */
   | { t: "board-window"; tab: string; open?: boolean; frame?: Frame; direction?: BoardDirection | "auto" }
   | { t: "tab-create"; id: string; name: string; color: string; grid: string }
   | { t: "tab-update"; id: string; name?: string; color?: string; grid?: string }

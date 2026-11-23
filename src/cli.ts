@@ -17,7 +17,7 @@ import { daemonCall, daemonHello, isAlive, readServerState, type ServerState, se
 import type { SessionInfo } from "./common/protocol.ts";
 import { VERSION } from "./common/version.ts";
 import { BOARD_HELP, cmdBoard } from "./board-cli.ts";
-import { cmdBanner, cmdClose, cmdList, cmdNew, cmdRead, cmdSend, cmdShowHide } from "./control.ts";
+import { cmdBanner, cmdClose, cmdList, cmdNew, cmdRead, cmdSend, cmdShowHide, cmdWait } from "./control.ts";
 
 const PORT_SEARCH = 100;
 const DEFAULT_HOST = "127.0.0.1";
@@ -586,6 +586,9 @@ try {
       break;
     case "send":
       await cmdSend(args);
+      break;
+    case "wait":
+      await cmdWait(args);
       break;
     case "banner":
       await cmdBanner(args);

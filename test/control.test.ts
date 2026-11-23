@@ -182,6 +182,49 @@ test("terminals opened from the command line land in their tab, and their agents
   await eventually(() => session(id), (found) => found === undefined, "the terminal closed");
 }, 90_000);
 
+test("wait returns once a terminal stops working, or gives up", async () => {
+  const id = (await cli("new", "--tab", "Waits", "--cwd", project, "--", "claude")).trim();
+  await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "idle" }), "claude idle");
+  // Idle already: at once.
+  expect(await cli("wait", id)).toMatch(new RegExp(`${id}\\s+Waits\\s+claude idle`));
+  const unknown = await run(["wait", "ffffffff"]);
+  expect(unknown.code).toBe(1);
+  expect(unknown.err).toContain("no such terminal: ffffffff");
+
+  await cli("send", id, "/busy");
+  await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "working" }), "claude working");
+  const timedOut = await run(["wait", id, "--timeout", "1s"]);
+  expect(timedOut.code).toBe(124);
+  expect(timedOut.err).toContain("timed out after 1s");
+  expect(timedOut.out).toContain("claude working");
+
+  // A wait running when the agent stops returns then; --until picks the states that count.
+  const waiting = run(["wait", id, "--until", "waiting", "--timeout", "20s"]);
+  await Bun.sleep(1500);
+  await cli("send", id, "/wait");
+  const answered = await waiting;
+  expect(answered.code).toBe(0);
+  expect(answered.out).toContain("claude waiting");
+
+  // --changed: a state the terminal was already in does not count until it has left it.
+  await cli("send", id, "carry on");
+  await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "idle" }), "claude idle again");
+  expect((await run(["wait", id, "--changed", "--timeout", "1500ms"])).code).toBe(1); // not a duration
+  expect((await run(["wait", id, "--changed", "--timeout", "2s"])).code).toBe(124);
+  const next = run(["wait", id, "--changed", "--timeout", "20s"]);
+  await cli("send", id, "/busy");
+  await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "working" }), "claude working again");
+  await Bun.sleep(1500); // the wait asks once a second
+  await cli("send", id, "the next task");
+  expect((await next).out).toContain("claude idle");
+
+  // A terminal that closes is gone, which counts as exited.
+  const gone = run(["wait", id, "--until", "exited", "--timeout", "20s"]);
+  await Bun.sleep(1500);
+  await cli("close", id);
+  expect((await gone).out).toContain(`${id}   closed`);
+}, 90_000);
+
 test("Codex's approval prompts, warnings and errors show", async () => {
   const id = (await cli("new", "--tab", "Workers", "--cwd", project, "--", "codex")).trim();
   await eventually(() => agentOf(id), (agent) => expectAgent(agent, { name: "codex", activity: "idle" }), "codex idle");
@@ -200,9 +243,14 @@ test("Codex's approval prompts, warnings and errors show", async () => {
   await cli("close", id);
 }, 60_000);
 
-test("a coordinating agent's board: pushed from its terminal, with its workers in the taskbar", async () => {
+test("a coordinating agent's board: pushed from its terminal, with its workers put away", async () => {
   const lead = (await cli("new", "--tab", "Project", "--banner", "lead", "--cwd", project)).trim();
   const worker = (await cli("new", "--tab", "Project", "--banner", "w1", "--cwd", project)).trim();
+  // Only a board brings a window back, so a tab without one puts none away.
+  const nowhereToGo = await run(["hide", worker]);
+  expect(nowhereToGo.code).toBe(1);
+  expect(nowhereToGo.err).toContain("in a tab without a board");
+  expect((await session(worker))?.hidden).toBeUndefined();
   // As the lead runs them: from its own terminal, so the tab is its tab.
   const asLead = { SPECTRAWEAVER_SESSION_ID: lead };
   const board = {
@@ -255,6 +303,9 @@ test("a coordinating agent's board: pushed from its terminal, with its workers i
   const cleared = (await listing()).tabs.find((candidate) => candidate.id === tab.id)!;
   expect(cleared.board).toBeUndefined();
   expect(cleared.boardWindow?.open).toBe(false);
+  // Without the board, the windows it would have brought back come out.
+  expect((await session(worker))?.hidden).toBeUndefined();
+  expect((await session(quiet))?.hidden).toBeUndefined();
   for (const id of [lead, worker, quiet, shown]) await cli("close", id);
 }, 60_000);
 

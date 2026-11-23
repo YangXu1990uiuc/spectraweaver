@@ -12,7 +12,7 @@ import { fail, flag, parseFlags } from "./cli-args.ts";
 import { shellQuote } from "./server/agents.ts";
 import { daemonCall, daemonHello, serverCall } from "./client.ts";
 import { type Paths, resolvePaths } from "./common/paths.ts";
-import type { AgentStatus, ScreenText, SessionInfo, SessionView, TabView } from "./common/protocol.ts";
+import { type AgentStatus, NEW_TERMINAL_SIZE, type ScreenText, type SessionInfo, type SessionView, type TabView } from "./common/protocol.ts";
 
 interface Listing {
   sessions: SessionView[];
@@ -71,6 +71,12 @@ export async function cmdList(args: string[]): Promise<void> {
     console.log(wanted ? "no terminals in that tab" : "no terminals");
     return;
   }
+  printSessions(sessions, tabs);
+}
+
+/** One line per terminal, in columns: id, tab, what its agent is doing, banner. */
+function printSessions(sessions: readonly SessionView[], tabs: ReadonlyMap<string, TabView>): void {
+  if (sessions.length === 0) return;
   const own = process.env.SPECTRAWEAVER_SESSION_ID;
   const rows = sessions.map((session) => [
     `${session.id}${session.id === own ? "*" : " "}`,
@@ -81,6 +87,85 @@ export async function cmdList(args: string[]): Promise<void> {
   const widths = [0, 1, 2].map((column) => Math.max(...rows.map((row) => row[column]!.length)));
   for (const row of rows) console.log(row.map((cell, column) => (column < 3 ? cell.padEnd(widths[column]!) : cell)).join("  "));
   if (own && sessions.some((session) => session.id === own)) console.log("(* is this terminal)");
+}
+
+/** What `wait` can wait for: the states a terminal leaves working for. */
+const WAIT_STATES = ["idle", "waiting", "stopped", "exited"] as const;
+type WaitState = (typeof WAIT_STATES)[number] | "working";
+const WAIT_POLL_MS = 1000;
+/** The exit status of a wait that timed out, as timeout(1) has it. */
+export const WAIT_TIMED_OUT = 124;
+
+/**
+ * A terminal's state for `wait`: its agent's activity (one not known yet counts as working);
+ * without an agent, whether its shell is at a prompt.
+ */
+function waitState(session: SessionView | undefined): WaitState {
+  if (!session || session.exited) return "exited";
+  if (session.agent) return session.agent.activity === "unknown" ? "working" : session.agent.activity;
+  return session.atPrompt ? "idle" : "working";
+}
+
+/** "90s", "30m", "2h", or seconds. */
+function duration(text: string): number {
+  const match = /^(\d+(?:\.\d+)?)(s|m|h)?$/.exec(text.trim());
+  if (!match) fail(`--timeout takes a duration such as 90s, 30m or 2h, not ${JSON.stringify(text)}`);
+  return Number(match[1]) * { s: 1000, m: 60_000, h: 3_600_000 }[(match[2] ?? "s") as "s" | "m" | "h"];
+}
+
+/**
+ * `wait ID...` returns once one of the terminals stops working (`--all`: once all have), and
+ * prints them; `--until` narrows the states that count, `--changed` counts only a state entered
+ * after the wait began (after a send, say, before the agent has picked it up), and `--timeout`
+ * gives up with status 124. It asks the server once a second.
+ */
+export async function cmdWait(args: string[]): Promise<void> {
+  const flags = parseFlags(args, ["until", "timeout", "all", "changed"]);
+  const ids = [...new Set(flags.rest)];
+  if (ids.length === 0) fail("usage: spectraweaver wait ID... [--until idle,waiting,stopped,exited] [--all] [--changed] [--timeout 30m]");
+  const until = new Set<WaitState>();
+  for (const word of (flag(flags, "until") ?? WAIT_STATES.join(",")).split(",")) {
+    const state = word.trim().toLowerCase();
+    if (!WAIT_STATES.includes(state as (typeof WAIT_STATES)[number])) fail(`--until takes ${WAIT_STATES.join(", ")}, not ${JSON.stringify(word)}`);
+    until.add(state as WaitState);
+  }
+  const timeout = flag(flags, "timeout");
+  const deadline = timeout === undefined ? Infinity : Date.now() + duration(timeout);
+  const all = flag(flags, "all") !== undefined;
+  const changed = flag(flags, "changed") !== undefined;
+  const paths = resolvePaths();
+  /** With --changed: the terminals seen outside the states waited for since the wait began. */
+  const moved = new Set<string>();
+  for (let first = true; ; first = false) {
+    const listed = await serverCall<Listing>(paths, "GET", "/api/v1/sessions");
+    if (!listed) fail("wait asks the server what the agents are doing; start it with `spectraweaver up`");
+    const sessions = new Map(listed.sessions.map((session) => [session.id, session]));
+    if (first) {
+      const unknown = ids.filter((id) => !sessions.has(id));
+      if (unknown.length > 0) fail(`no such terminal: ${unknown.join(", ")} (\`spectraweaver ls\` lists them)`);
+    }
+    const reached = ids.filter((id) => {
+      const state = waitState(sessions.get(id));
+      if (!until.has(state)) moved.add(id);
+      return until.has(state) && (!changed || moved.has(id));
+    });
+    const tabs = new Map(listed.tabs.map((tab) => [tab.id, tab]));
+    // A terminal closed meanwhile is gone from the list: it is named by its id.
+    const show = (list: string[]) => {
+      printSessions(list.flatMap((id) => sessions.get(id) ?? []), tabs);
+      for (const id of list) if (!sessions.has(id)) console.log(`${id}   closed`);
+    };
+    if (all ? reached.length === ids.length : reached.length > 0) {
+      show(reached);
+      return;
+    }
+    if (Date.now() >= deadline) {
+      console.error(`timed out after ${timeout}; as they are now:`);
+      show(ids);
+      process.exit(WAIT_TIMED_OUT);
+    }
+    await Bun.sleep(Math.min(WAIT_POLL_MS, Math.max(0, deadline - Date.now())));
+  }
 }
 
 function agentText(agent: AgentStatus): string {
@@ -96,7 +181,7 @@ function stateOf(session: SessionInfo): string {
 
 export async function cmdNew(args: string[]): Promise<void> {
   const flags = parseFlags(args, ["size", "cwd", "tab", "banner", "show"], { freeText: true });
-  const match = /^(\d+)x(\d+)$/i.exec(flag(flags, "size") ?? "120x36");
+  const match = /^(\d+)x(\d+)$/i.exec(flag(flags, "size") ?? `${NEW_TERMINAL_SIZE.cols}x${NEW_TERMINAL_SIZE.rows}`);
   if (!match) fail("--size must look like 120x36");
   const paths = resolvePaths();
   const request = {
@@ -184,7 +269,7 @@ export async function cmdBanner(args: string[]): Promise<void> {
   if (!updated) fail("banners are kept by the server; start it with `spectraweaver up`");
 }
 
-/** `show ID` brings a terminal's window out of the taskbar and in front; `hide ID` puts it away. */
+/** `show ID` brings a terminal's window out and in front; `hide ID` puts it away (in a tab with a board). */
 export async function cmdShowHide(args: string[], hidden: boolean): Promise<void> {
   const [id, extra] = parseFlags(args, []).rest;
   const name = hidden ? "hide" : "show";

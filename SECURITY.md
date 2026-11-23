@@ -20,12 +20,14 @@ Summarised from [DESIGN.md §9](DESIGN.md#9-security):
 - **Other users on the same machine.**
   - Sign-in is mandatory.
   - Files and sockets are owner-only (0700 / 0600).
+  - Files uploaded from the browser go to a directory in `/tmp` that is checked to be yours and owner-only (not a link, not another user's) before every upload; each file is 0600.
   - Password guessing is throttled.
 - **Malicious websites open in your browser.**
   - Origin and Host checks guard against CSRF, cross-site WebSocket hijacking and DNS rebinding.
   - Cookies are `HttpOnly` and `SameSite=Strict`.
   - The page refuses to run inside another site's frame.
-  - The command line's interface (`/api/v1/…`, used by `spectraweaver ls`, `new`, `banner`, `show`, `hide` and `board`) takes the login token in an `Authorization` header, which a web page cannot send to another origin without a CORS preflight that the server never answers.
+  - Uploads (`/api/upload`) need the sign-in cookie and pass the same Origin and Host checks.
+  - The command line's interface (`/api/v1/…`, used by `spectraweaver ls`, `new`, `banner`, `show`, `hide`, `wait` and `board`) takes the login token in an `Authorization` header, which a web page cannot send to another origin without a CORS preflight that the server never answers.
 - **Hostile terminal output.**
   - Output is rendered as text, never as HTML.
   - Only `http` and `https` links open.

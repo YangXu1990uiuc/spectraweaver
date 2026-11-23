@@ -61,7 +61,7 @@ export function taskLive(task: BoardTask, session: SessionView | undefined, now:
 }
 
 /**
- * An agent's state in a few words, as every badge shows it (windows, taskbar, board), with how
+ * An agent's state in a few words, as every badge shows it (windows, the board), with how
  * long it has been idle unless `age` is false.
  */
 export function agentLive(terminal: string, agent: AgentStatus, now: number, age = true): TaskLive {
