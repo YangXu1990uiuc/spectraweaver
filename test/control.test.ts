@@ -165,7 +165,10 @@ test("terminals opened from the command line land in their tab, and their agents
   });
   expect(await cli("ls")).toContain("claude stopped: at capacity");
   await cli("send", id, "carry on");
-  await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "idle" }), "claude idle again");
+  await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "idle", model: "claude-fake-1" }), "claude idle again, its model known");
+  expect(await cli("ls")).toMatch(/Workers\s+claude\/fake-1 idle/);
+  // Its latest reply alone: both parts of the message, without the rest of the screen.
+  expect(await cli("read", id, "--reply")).toBe("done\n\n(you said: carry on)\n");
 
   // Several lines go in as one paste, then Enter.
   await run(["send", id, "-"], "first line\nsecond line\n");
@@ -216,7 +219,7 @@ test("wait returns once a terminal stops working, or gives up", async () => {
   await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "working" }), "claude working again");
   await Bun.sleep(1500); // the wait asks once a second
   await cli("send", id, "the next task");
-  expect((await next).out).toContain("claude idle");
+  expect((await next).out).toMatch(/claude\S* idle/);
 
   // A terminal that closes is gone, which counts as exited.
   const gone = run(["wait", id, "--until", "exited", "--timeout", "20s"]);
@@ -230,8 +233,10 @@ test("Codex's approval prompts, warnings and errors show", async () => {
   await eventually(() => agentOf(id), (agent) => expectAgent(agent, { name: "codex", activity: "idle" }), "codex idle");
   await cli("send", id, "/approve");
   await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "waiting", reason: "needs approval" }), "codex asking");
+  expect((await agentOf(id))?.detail).toBe("Would you like to run the following command? · $ rm -rf build");
   await cli("send", id, "go ahead");
-  await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "idle", warning: undefined }), "codex idle again");
+  await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "idle", warning: undefined, model: "gpt-fake-1" }), "codex idle again");
+  expect(await cli("read", id, "--reply")).toBe("done (you said: go ahead)\n");
   await cli("send", id, "/warn");
   await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "idle", warning: "cyber flag" }), "the cyber warning");
   await cli("send", id, "/error", "usage_limit_exceeded");
@@ -289,12 +294,37 @@ test("a coordinating agent's board: pushed from its terminal, with its workers p
   await cli("hide", quiet);
   expect((await session(quiet))?.hidden).toBe(true);
 
+  // One task at a time, from any terminal of the tab (a worker marking its own task, say).
+  const asWorker = { SPECTRAWEAVER_SESSION_ID: worker };
+  const updated = await run(["board", "update", "T3", "--status", "wip", "--note", "API merged, starting the page"], undefined, asWorker);
+  expect(updated.out.trim()).toBe("T3 wip; board of “Project”: 4 tasks: 1 done, 3 wip");
+  const taskOf = async (id: string) => (await listing()).tabs.find((candidate) => candidate.id === tab.id)?.board?.tasks.find((task) => task.id === id);
+  expect(await taskOf("T3")).toEqual({ id: "T3", title: "Login page", status: "wip", after: ["T2"], note: "API merged, starting the page" });
+  // The lead stays the lead, whoever changed a task.
+  expect((await listing()).tabs.find((candidate) => candidate.id === tab.id)?.board?.lead).toBe(lead);
+  await run(["board", "update", "T3", "--note", ""], undefined, asWorker);
+  expect((await taskOf("T3"))?.note).toBeUndefined();
+  // A task the board does not have is added, given its status.
+  expect((await run(["board", "update", "T5", "--status", "todo", "--title", "Docs", "--after", "T3,T4"], undefined, asLead)).out).toContain("5 tasks");
+  expect(await taskOf("T5")).toEqual({ id: "T5", title: "Docs", status: "todo", after: ["T3", "T4"] });
+  const unknown = await run(["board", "update", "T9", "--note", "x"], undefined, asLead);
+  expect(unknown.code).toBe(1);
+  expect(unknown.err).toContain('there is no task "T9" on the board; give its status to add it');
+  const circle = await run(["board", "update", "T1", "--after", "T5"], undefined, asLead);
+  expect(circle.err).toContain("the task was not changed: these tasks wait for each other in a circle");
+  expect((await run(["board", "update", "T5"], undefined, asLead)).err).toContain("say what to change");
+
+  // A shell has no reply to read.
+  const noAgent = await run(["read", worker, "--reply"]);
+  expect(noAgent.code).toBe(1);
+  expect(noAgent.err).toContain(`no coding agent runs in terminal ${worker}`);
+
   // Mistakes are refused with what to write instead, and the board stays as it was.
   const wrong = await run(["board", "set", "-"], JSON.stringify([{ id: "T9", status: "review" }]), asLead);
   expect(wrong.code).toBe(1);
   expect(wrong.err).toContain('the board was not set: task "T9": "status" must be one of todo, wip, done, blocked');
   const shownBoard = JSON.parse(await cli("board", "show", "--tab", "project")) as { tasks: unknown[] };
-  expect(shownBoard.tasks).toHaveLength(4);
+  expect(shownBoard.tasks).toHaveLength(5);
   const nowhere = await run(["board", "show"]);
   expect(nowhere.code).toBe(1);
   expect(nowhere.err).toContain("say which tab");

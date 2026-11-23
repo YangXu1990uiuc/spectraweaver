@@ -22,6 +22,15 @@ export interface TaskLive {
   detail?: string;
 }
 
+/** A time to come, briefly in the viewer's own way: "22:30" today, "Sat 09:00" another day. */
+export function clockTime(at: number, now: number): string {
+  const when = new Date(at);
+  const time = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return when.toDateString() === new Date(now).toDateString()
+    ? time
+    : `${when.toLocaleDateString([], { weekday: "short" })} ${time}`;
+}
+
 /** How long ago, briefly: "now", "12m", "3h", "2d". */
 export function shortAge(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
@@ -68,7 +77,10 @@ export function agentLive(terminal: string, agent: AgentStatus, now: number, age
   const detail = agent.detail;
   if (agent.activity === "stopped" || agent.warning) {
     const why = agent.activity === "stopped" ? (agent.reason ?? "stopped") : agent.warning;
-    return { terminal, text: `⚠ ${why}`, kind: "stopped", alarm: "red", detail };
+    // A limit that lifts: when, and once it has, that the agent can be told to go on.
+    const resets = agent.activity === "stopped" && agent.resetsAt !== undefined ? agent.resetsAt : undefined;
+    const when = resets === undefined ? "" : now >= resets ? " · lifted" : ` · ${clockTime(resets, now)}`;
+    return { terminal, text: `⚠ ${why}${when}`, kind: "stopped", alarm: "red", detail };
   }
   if (agent.activity === "waiting") {
     return { terminal, text: agent.reason ?? "needs you", kind: "waiting", alarm: "amber", detail };

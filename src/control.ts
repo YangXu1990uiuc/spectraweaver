@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import { ownTab } from "./board-cli.ts";
 import { fail, flag, parseFlags } from "./cli-args.ts";
 import { shellQuote } from "./server/agents.ts";
+import type { AgentReply } from "./server/control-api.ts";
 import { daemonCall, daemonHello, serverCall } from "./client.ts";
 import { type Paths, resolvePaths } from "./common/paths.ts";
 import { type AgentStatus, NEW_TERMINAL_SIZE, type ScreenText, type SessionInfo, type SessionView, type TabView } from "./common/protocol.ts";
@@ -168,10 +169,24 @@ export async function cmdWait(args: string[]): Promise<void> {
   }
 }
 
-function agentText(agent: AgentStatus): string {
+/** "claude/opus-5-5 stopped: usage limit, resets 22:30 (cyber flag)". */
+function agentText(agent: AgentStatus, now = Date.now()): string {
+  const model = agent.model ? `/${agent.model.replace(/^claude-/, "")}` : "";
   const reason = agent.reason ? `: ${agent.reason}` : "";
+  const resets =
+    agent.resetsAt === undefined ? "" : `, ${agent.resetsAt > now ? "resets" : "lifted"} ${localTime(agent.resetsAt, now)}`;
   const warning = agent.warning ? ` (${agent.warning})` : "";
-  return `${agent.name} ${agent.activity}${reason}${warning}`;
+  return `${agent.name}${model} ${agent.activity}${reason}${resets}${warning}`;
+}
+
+/** "22:30" today, "2026-11-24 22:30" another day, in this machine's time. */
+function localTime(at: number, now: number): string {
+  const when = new Date(at);
+  const two = (value: number) => String(value).padStart(2, "0");
+  const clock = `${two(when.getHours())}:${two(when.getMinutes())}`;
+  return when.toDateString() === new Date(now).toDateString()
+    ? clock
+    : `${when.getFullYear()}-${two(when.getMonth() + 1)}-${two(when.getDate())} ${clock}`;
 }
 
 function stateOf(session: SessionInfo): string {
@@ -214,12 +229,19 @@ export async function cmdNew(args: string[]): Promise<void> {
 }
 
 export async function cmdRead(args: string[]): Promise<void> {
-  const flags = parseFlags(args, ["lines"]);
+  const flags = parseFlags(args, ["lines", "reply"]);
   const [id, extra] = flags.rest;
-  if (!id || extra !== undefined) fail("usage: spectraweaver read ID [--lines N]");
+  if (!id || extra !== undefined) fail("usage: spectraweaver read ID [--lines N | --reply]");
   const lines = flag(flags, "lines");
   if (lines !== undefined && !/^[1-9]\d*$/.test(lines)) fail("--lines must be a positive number");
   const paths = resolvePaths();
+  if (flag(flags, "reply") !== undefined) {
+    if (lines !== undefined) fail("--reply prints the agent's latest reply, not lines of the screen: give one or the other");
+    const reply = await serverCall<AgentReply>(paths, "GET", `/api/v1/sessions/${encodeURIComponent(id)}/reply`);
+    if (!reply) fail("read --reply finds the agent's conversation through the server; start it with `spectraweaver up`");
+    console.log(reply.text);
+    return;
+  }
   await needText(paths);
   await existing(paths, id);
   const text = await daemonCall<ScreenText>(paths, { op: "text", session: id, lines: lines ? Number(lines) : undefined });

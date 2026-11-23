@@ -22,6 +22,10 @@ and how often the board is pushed are up to the agent and its prompt.
 
   spectraweaver board set [FILE | -] [--tab NAME]
                         replace the board with FILE, or with standard input
+  spectraweaver board update ID [--status S] [--note TEXT] [--title TEXT] [--after IDS]
+                             [--session ID] [--link URL] [--tab NAME]
+                        change one task, or add it (with --status) if the board has no
+                        task ID; "" removes a field, IDS is comma-separated
   spectraweaver board show [--tab NAME]
                         print the board as JSON
   spectraweaver board clear [--tab NAME]
@@ -51,15 +55,20 @@ The board is JSON:
   note     one line on what is going on
   link     an http(s) link: a pull request, the task's folder
 
-Push the whole board each time; tasks left out are gone. The first board of a tab puts the
-board on the left and the pushing terminal on the right.
+Push the whole board with set when the plan changes: tasks left out are gone. For one task's
+status or note, board update is enough, and a worker can mark its own task with it (from the
+worker's terminal, it finds the tab itself); a set afterwards still replaces everything. The
+first board of a tab puts the board on the left and the pushing terminal on the right.
 
 Workers' terminals (run from a terminal in the tab, they land in it):
   spectraweaver new --banner "T2: refresh API" --cwd DIR -- claude
                         prints the new terminal's id; in a tab with a board it starts put
                         away, and the person opens it from its task (--show to show it)
   spectraweaver send ID "read tasks/T2/BRIEF.md; write tasks/T2/REPORT.md when done"
-  spectraweaver ls [--json]          what every terminal's agent is doing
+  spectraweaver ls [--json]          what every terminal's agent is doing: its model, and for
+                                     one waiting, what its dialog asks ("detail"); for one
+                                     stopped by a usage limit, when it lifts ("resetsAt")
+  spectraweaver read ID --reply      the agent's latest reply, without the rest of the screen
   spectraweaver read ID [--lines N]  a terminal's screen as text (N: its last N lines)
   spectraweaver wait ID... [--timeout 30m]
                         returns once one of them stops working: idle, waiting, stopped, exited
@@ -83,8 +92,8 @@ export async function cmdBoard(args: string[]): Promise<void> {
     console.log(BOARD_HELP);
     return;
   }
-  if (!["set", "show", "clear"].includes(command)) fail(`unknown board command: ${command}\n\n${BOARD_HELP}`);
-  const flags = parseFlags(rest, ["tab"]);
+  if (!["set", "update", "show", "clear"].includes(command)) fail(`unknown board command: ${command}\n\n${BOARD_HELP}`);
+  const flags = parseFlags(rest, command === "update" ? ["tab", ...TASK_OPTIONS, "after"] : ["tab"]);
   const paths = resolvePaths();
   const tab = await boardTab(paths, flag(flags, "tab"));
   const query = `/api/v1/board?tab=${encodeURIComponent(tab)}`;
@@ -97,6 +106,24 @@ export async function cmdBoard(args: string[]): Promise<void> {
       const result = needServer(await serverCall<BoardResult>(paths, "PUT", query, { board, lead }));
       for (const warning of result.warnings) console.error(`warning: ${warning}`);
       console.log(`board of “${result.tab.name}”: ${summary(result.tab.board!)}`);
+      return;
+    }
+    case "update": {
+      const [id, extra] = flags.rest;
+      if (!id || extra !== undefined) fail("usage: spectraweaver board update ID [--status S] [--note TEXT] [--title TEXT] [--after IDS] [--session ID] [--link URL]");
+      const patch: Record<string, unknown> = {};
+      for (const option of TASK_OPTIONS) {
+        const value = flag(flags, option);
+        if (value !== undefined) patch[option] = value;
+      }
+      const after = flag(flags, "after");
+      if (after !== undefined) patch.after = after.split(",").map((word) => word.trim()).filter(Boolean);
+      if (Object.keys(patch).length === 0) fail("say what to change: --status, --note, --title, --after, --session or --link");
+      const path = `/api/v1/board/task?tab=${encodeURIComponent(tab)}&id=${encodeURIComponent(id)}`;
+      const result = needServer(await serverCall<BoardResult>(paths, "PATCH", path, { patch }));
+      for (const warning of result.warnings) console.error(`warning: ${warning}`);
+      const task = result.tab.board!.tasks.find((candidate) => candidate.id === id);
+      console.log(`${id} ${task?.status ?? ""}; board of “${result.tab.name}”: ${summary(result.tab.board!)}`);
       return;
     }
     case "show": {
@@ -115,6 +142,9 @@ export async function cmdBoard(args: string[]): Promise<void> {
       fail(`unknown board command: ${command}\n\n${BOARD_HELP}`);
   }
 }
+
+/** The options of `board update` that set a task's field of the same name, as given. */
+const TASK_OPTIONS = ["status", "note", "title", "session", "link"] as const;
 
 /** The tab named, or the one the command runs in. */
 async function boardTab(paths: Paths, named: string | undefined): Promise<string> {

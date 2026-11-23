@@ -48,6 +48,23 @@ export interface Control {
   setBoard(tab: string, board: unknown, lead?: string): BoardResult;
   /** Removes a tab's board; null if no tab has that name or id. */
   clearBoard(tab: string): TabView | null;
+  /**
+   * Changes one task of a tab's board (null or "" removes a field), or adds it when the board has
+   * no task with that id; throws BoardError if there is no board or the result is not valid.
+   */
+  updateTask(tab: string, id: string, patch: Record<string, unknown>): BoardResult;
+  /**
+   * The latest reply of the agent in a terminal, running or the last one it ran; null if there
+   * is no such terminal, an Error saying why if there is no reply.
+   */
+  reply(id: string): AgentReply | null;
+}
+
+export interface AgentReply {
+  agent: string;
+  text: string;
+  /** When it was written, in ms since the epoch, if the agent recorded it. */
+  at?: number;
 }
 
 
@@ -110,6 +127,18 @@ export function controlRoutes(control: Control, token: () => string | null, host
         }
       },
     },
+    "/api/v1/sessions/:id/reply": {
+      GET: (request: Request & { params: { id: string } }) => {
+        const refused = authorized(request);
+        if (refused) return refused;
+        try {
+          const reply = control.reply(request.params.id);
+          return reply ? Response.json(reply) : new Response(`no such terminal: ${request.params.id}`, { status: 404 });
+        } catch (error) {
+          return new Response((error as Error).message, { status: 404 });
+        }
+      },
+    },
     // The tab goes in the query (?tab=NAME), as names may hold any character.
     "/api/v1/board": {
       GET: (request: Request) => {
@@ -138,6 +167,24 @@ export function controlRoutes(control: Control, token: () => string | null, host
         const name = tabParam(request);
         const tab = name ? control.clearBoard(name) : null;
         return tab ? Response.json({ tab }) : noTab(name);
+      },
+    },
+    // One task: ?tab=NAME&id=T3, the fields to change in the body's "patch".
+    "/api/v1/board/task": {
+      PATCH: async (request: Request) => {
+        const refused = authorized(request);
+        if (refused) return refused;
+        const name = tabParam(request);
+        const id = new URL(request.url).searchParams.get("id")?.trim() ?? "";
+        if (!name || !id) return new Response("say which tab and which task", { status: 400 });
+        const input = await body(request);
+        const patch = typeof input.patch === "object" && input.patch !== null && !Array.isArray(input.patch) ? input.patch : {};
+        try {
+          return Response.json(control.updateTask(name, id, patch as Record<string, unknown>));
+        } catch (error) {
+          if (error instanceof BoardError) return new Response(`the task was not changed: ${error.message}`, { status: 400 });
+          throw error;
+        }
       },
     },
   };

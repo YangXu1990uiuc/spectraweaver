@@ -94,8 +94,11 @@ function act(line: string): void {
         show(`API Error: fake ${kind}`);
         return setStatus("idle");
       default:
+        // A reply in two parts sharing the message's id, as Claude Code records them.
         record({ type: "user", message: { role: "user", content: line } });
-        record({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+        for (const text of ["done", `(you said: ${line})`]) {
+          record({ type: "assistant", message: { id: `msg-${line.length}`, role: "assistant", model: "claude-fake-1", content: [{ type: "text", text }] } });
+        }
         return setStatus("idle");
     }
   }
@@ -122,7 +125,9 @@ function act(line: string): void {
       process.stdout.write("\x1b[2J\x1b[H");
       show(`you: ${line}`);
       event({ type: "task_started", turn_id: "t" });
-      return event({ type: "task_complete", turn_id: "t", last_agent_message: "done" });
+      record({ type: "turn_context", payload: { cwd, model: "gpt-fake-1" } });
+      event({ type: "agent_message", message: `done (you said: ${line})` });
+      return event({ type: "task_complete", turn_id: "t", last_agent_message: `done (you said: ${line})` });
   }
 }
 

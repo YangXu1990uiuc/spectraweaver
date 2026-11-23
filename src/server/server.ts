@@ -93,6 +93,8 @@ interface Fan {
 const MAX_CLIENT_BACKLOG = 32 * 1024 * 1024;
 /** The JSON a sign-in or a password change sends is tiny; larger bodies are not read. */
 const MAX_JSON_BYTES = 64 * 1024;
+/** What `board update` may change of a task (its id names it). */
+const TASK_FIELDS = ["title", "status", "after", "session", "note", "link"] as const;
 const REVIVAL_EVERY_MS = 15_000;
 const STATUS_EVERY_MS = 2000;
 /** The rows of a terminal's screen read to tell what its agent shows. */
@@ -773,6 +775,49 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
           : [],
       );
       return { tab: meta.tabs().find((candidate) => candidate.id === tab)!, warnings };
+    },
+    updateTask: (name, id, patch) => {
+      const tab = findTab(name);
+      const current = tab?.board;
+      if (!tab || !current) throw new BoardError(`“${name}” has no board; \`spectraweaver board set\` makes one`);
+      const tasks: Array<Record<string, unknown>> = current.tasks.map((task) => ({ ...task }));
+      let task = tasks.find((candidate) => candidate.id === id);
+      if (!task) {
+        if (patch.status === undefined) throw new BoardError(`there is no task "${id}" on the board; give its status to add it`);
+        task = { id };
+        tasks.push(task);
+      }
+      for (const field of TASK_FIELDS) {
+        if (!(field in patch)) continue;
+        const value = patch[field];
+        if (value === null || value === "" || (Array.isArray(value) && value.length === 0)) delete task[field];
+        else task[field] = value;
+      }
+      // Checked as a whole, as a pushed board is: a new "after" may close a circle.
+      const lead = current.lead && sessions.has(current.lead) ? current.lead : undefined;
+      const board = parseBoard({ title: current.title, tasks }, Date.now(), lead);
+      meta.setBoard(tab.id, board);
+      broadcastTabs();
+      const changed = board.tasks.find((candidate) => candidate.id === id);
+      const warnings =
+        changed?.session && !sessions.has(changed.session)
+          ? [`task "${id}": there is no terminal ${changed.session} (\`spectraweaver ls\` lists them)`]
+          : [];
+      return { tab: meta.tabs().find((candidate) => candidate.id === tab.id)!, warnings };
+    },
+    reply: (id) => {
+      const session = sessions.get(id);
+      if (!session) return null;
+      const running = session.exited ? null : foregroundProcess(session.pid);
+      const agent = running && !running.isShell ? detectAgent(running.argv) : null;
+      const recorded = meta.revival(id)?.agent;
+      const name = agent?.name ?? (recorded && agentNamed(recorded.name)?.name);
+      if (!name) throw new Error(`no coding agent runs in terminal ${id}, nor has one been seen there`);
+      // The conversation noted for this very process; for an agent that has quit, its last one.
+      const conversation = recorded && (!agent || recorded.pid === running?.pid) ? recorded.conversation : undefined;
+      const found = statusReader.reply(name, agent ? running?.pid : undefined, conversation);
+      if (!found) throw new Error(`${name} in terminal ${id} has not replied yet, or its conversation was not found`);
+      return { agent: name, ...found };
     },
     clearBoard: (name) => {
       const tab = findTab(name);

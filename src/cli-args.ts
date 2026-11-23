@@ -7,7 +7,7 @@
 import { VERSION } from "./common/version.ts";
 
 export const FIRST_PORT = 7777;
-const BOOLEAN_FLAGS = new Set(["all", "clear", "rotate", "reset", "allow-remote", "json", "no-enter", "show", "changed"]);
+const BOOLEAN_FLAGS = new Set(["all", "clear", "rotate", "reset", "allow-remote", "json", "no-enter", "show", "changed", "reply"]);
 
 export const USAGE = `spectraweaver ${VERSION}: persistent terminals in the browser
 
@@ -34,16 +34,18 @@ Usage:
 Terminals (for scripts and coding agents too; ID is a terminal's id, from \`ls\` or \`new\`):
   spectraweaver ls [--json] [--tab NAME]
                         list terminals: tab, banner, and what each one's coding agent is doing
-                        (working, idle, waiting for an answer, or stopped and why)
+                        (working, idle, waiting for an answer, or stopped and why) and its
+                        model; --json adds what a waiting agent's dialog asks, and when a usage
+                        limit lifts
   spectraweaver new [--tab NAME] [--banner TEXT] [--size 160x48] [--cwd DIR] [--show] [-- COMMAND...]
                         create a terminal (160x48 unless --size) and print its id; COMMAND is
                         typed into its shell. It lands in the tab of the terminal the command
                         runs in, or the first tab; a tab name that no tab has yet makes a new
                         tab. In a tab with a board it starts put away (its task brings it
                         out), unless --show
-  spectraweaver read ID [--lines N]
+  spectraweaver read ID [--lines N | --reply]
                         print a terminal's screen as text; --lines N prints its last N lines,
-                        scrollback included
+                        scrollback included; --reply prints only its agent's latest reply
   spectraweaver send ID [--no-enter] [--] TEXT...
                         type TEXT into a terminal and press Enter; TEXT "-" reads standard input,
                         and text of several lines goes in as one paste (-- before text that
@@ -69,6 +71,8 @@ Task boards (for an agent coordinating others; \`spectraweaver board --help\` ex
   spectraweaver board set [FILE | -] [--tab NAME]
                         show a tab's tasks and what each waits for as a graph, with the live
                         state of the terminal working on each
+  spectraweaver board update ID [--status S] [--note TEXT] [--tab NAME] ...
+                        change one task, or add it
   spectraweaver board show | clear [--tab NAME]
 
 In the foreground (for debugging, or under a service manager):

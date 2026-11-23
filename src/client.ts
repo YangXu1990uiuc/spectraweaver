@@ -103,7 +103,7 @@ export function serverUrl(host: string, port: number): string {
  */
 export async function serverCall<T>(
   paths: Paths,
-  method: "GET" | "POST" | "PUT" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
 ): Promise<T | null> {

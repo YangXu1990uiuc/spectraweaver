@@ -814,7 +814,13 @@ class Tile {
     if (badge.textContent !== live.text) badge.textContent = live.text;
     badge.className = `badge agent ${live.kind}`;
     const reason = agent.reason ? ` (${agent.reason})` : "";
-    badge.title = [`${agent.name}: ${agent.activity}${reason}`, agent.warning && `warning: ${agent.warning}`, agent.detail]
+    badge.title = [
+      `${agent.name}: ${agent.activity}${reason}`,
+      agent.warning && `warning: ${agent.warning}`,
+      agent.detail,
+      agent.resetsAt !== undefined && `the limit lifts ${new Date(agent.resetsAt).toLocaleString()}`,
+      agent.model && `model: ${agent.model}`,
+    ]
       .filter(Boolean)
       .join("\n");
   }

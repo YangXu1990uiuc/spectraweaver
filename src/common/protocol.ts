@@ -148,12 +148,16 @@ export interface AgentStatus {
   activity: AgentActivity;
   /** Why it waits or stopped, in a few words: "at capacity", "needs approval". */
   reason?: string;
-  /** The agent's own words for it, when it gave any. */
+  /** The agent's own words for it, when it gave any; for one waiting, what its dialog asks. */
   detail?: string;
   /** Something wrong it works on despite ("cyber flag": rerouted to another model); shown like a stop. */
   warning?: string;
   /** Since when it has been doing this (ms since the epoch), as far as the server has watched. */
   since?: number;
+  /** The model its latest reply came from ("claude-opus-5-5"), as the agent records it. */
+  model?: string;
+  /** When the limit that stopped it lifts (ms since the epoch), when the agent said. */
+  resetsAt?: number;
 }
 
 /**

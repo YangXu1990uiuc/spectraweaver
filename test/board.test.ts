@@ -13,7 +13,7 @@ import {
   layoutBoard,
   pickLayout,
 } from "../src/web/board-layout.ts";
-import { shortAge, taskLive } from "../src/web/board-live.ts";
+import { agentLive, clockTime, shortAge, taskLive } from "../src/web/board-live.ts";
 import { ago } from "../src/web/dom.ts";
 
 const NOW = 1_800_000_000_000;
@@ -259,4 +259,14 @@ describe("a task's terminal, live", () => {
       "yesterday",
     ]);
   });
+});
+
+test("a usage limit's badge says when it lifts, then that it has", () => {
+  const now = Date.parse("2026-11-22T20:05:00-08:00");
+  const resetsAt = now + 2 * 3_600_000;
+  const limit: AgentStatus = { name: "claude", activity: "stopped", reason: "usage limit", resetsAt };
+  expect(agentLive("w1", limit, now).text).toBe(`⚠ usage limit · ${clockTime(resetsAt, now)}`);
+  expect(agentLive("w1", limit, resetsAt + 1000)).toMatchObject({ text: "⚠ usage limit · lifted", alarm: "red" });
+  // Another day names the day.
+  expect(clockTime(now + 3 * 86_400_000, now)).toContain(new Date(now + 3 * 86_400_000).toLocaleDateString([], { weekday: "short" }));
 });
