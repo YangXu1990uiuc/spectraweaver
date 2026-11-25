@@ -366,6 +366,34 @@ test("a coordinating agent's board: pushed from its terminal, with its workers p
   expect(nothing.out).toContain(lead);
   expect(nothing.out).toContain(worker);
 
+  // The board names the terminals it gives tasks: ls (and their windows) show that, not banners.
+  // A plain shell no longer working on its task in progress is marked.
+  // T2 is done: the worker is named by it, ticked, and nothing is marked.
+  expect((await run(["ls"], undefined, asLead)).out).toMatch(new RegExp(`${worker}\\s+Project\\s+shell\\s+✓ T2 Refresh API`));
+  await run(["board", "update", "T2", "--status", "wip"], undefined, asLead);
+  const named = (await run(["ls"], undefined, asLead)).out;
+  expect(named).toMatch(new RegExp(`${worker}\\s+Project\\s+shell, T2 in progress ⚠\\s+T2 Refresh API`));
+  expect(named).toMatch(new RegExp(`${lead}\\*?\\s+Project\\s+\\S+.*lead · Login refactor`));
+  const listedTasks = (JSON.parse((await run(["ls", "--json"], undefined, asLead)).out) as { sessions: Array<SessionView & { tasks?: unknown }> }).sessions;
+  expect(listedTasks.find((session) => session.id === worker)?.tasks).toEqual([{ id: "T2", status: "wip" }]);
+  const noted = await run(["banner", worker, "w1 again"], undefined, asLead);
+  expect(noted.err).toContain("the board names this terminal");
+
+  // An agent on a task in progress that stops working wakes a wait on the board.
+  const agentWorker = (await run(["new", "--cwd", project, "--", "claude"], undefined, asLead)).out.trim();
+  await eventually(() => agentOf(agentWorker), (agent) => expectAgent(agent, { activity: "idle" }), "the agent worker idle");
+  await run(["board", "update", "T6", "--status", "wip", "--title", "Agent work", "--session", agentWorker], undefined, asLead);
+  const stalledWait = run(["wait", "--board", "--timeout", "30s"], undefined, asLead);
+  await cli("send", agentWorker, "/busy");
+  await eventually(() => agentOf(agentWorker), (agent) => expectAgent(agent, { activity: "working" }), "the agent worker working");
+  await Bun.sleep(1500); // the wait asks once a second
+  await cli("send", agentWorker, "all done, but the task is left in progress");
+  const stalledOut = await stalledWait;
+  expect(stalledOut.code).toBe(0);
+  expect(stalledOut.out).toContain(`T6 in progress, but its terminal ${agentWorker} is no longer working: claude/fake-1 idle`);
+  await run(["board", "update", "T6", "--status", "done"], undefined, asLead);
+  await cli("close", agentWorker);
+
   // A shell has no reply to read.
   const noAgent = await run(["read", worker, "--reply"]);
   expect(noAgent.code).toBe(1);
@@ -376,7 +404,7 @@ test("a coordinating agent's board: pushed from its terminal, with its workers p
   expect(wrong.code).toBe(1);
   expect(wrong.err).toContain('the board was not set: task "T9": "status" must be one of todo, wip, done, blocked');
   const shownBoard = JSON.parse(await cli("board", "show", "--tab", "project")) as { tasks: unknown[] };
-  expect(shownBoard.tasks).toHaveLength(5);
+  expect(shownBoard.tasks).toHaveLength(6);
   const nowhere = await run(["board", "show"]);
   expect(nowhere.code).toBe(1);
   expect(nowhere.err).toContain("say which tab");

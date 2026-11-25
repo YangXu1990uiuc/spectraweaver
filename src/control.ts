@@ -15,6 +15,7 @@ import { daemonCall, daemonHello, serverCall } from "./client.ts";
 import { type Paths, resolvePaths } from "./common/paths.ts";
 import {
   type AgentStatus,
+  type Board,
   type BoardTask,
   NEW_TERMINAL_SIZE,
   type ScreenText,
@@ -22,6 +23,7 @@ import {
   type SessionView,
   type TabView,
 } from "./common/protocol.ts";
+import { boardName, stalledTasks, tasksOf } from "./common/board-terminals.ts";
 import { sameTask } from "./server/board.ts";
 
 interface Listing {
@@ -84,7 +86,12 @@ export async function cmdList(args: string[]): Promise<void> {
   // Only when the tab was not asked for: the terminals left out, so their being there is no surprise.
   const elsewhere = !wanted && ownTab ? listed.sessions.length - sessions.length : 0;
   if (flag(flags, "json")) {
-    console.log(JSON.stringify({ sessions, tabs: shownTabs, ...(ownTab && !wanted ? { elsewhere } : {}) }, null, 2));
+    // With the tasks the board gives each terminal, and their status.
+    const withTasks = sessions.map((session) => {
+      const tasks = tasksOf(tabs.get(session.tab)?.board, session.id).map((task) => ({ id: task.id, status: task.status }));
+      return tasks.length > 0 ? { ...session, tasks } : session;
+    });
+    console.log(JSON.stringify({ sessions: withTasks, tabs: shownTabs, ...(ownTab && !wanted ? { elsewhere } : {}) }, null, 2));
     return;
   }
   if (sessions.length === 0) console.log(wanted || ownTab ? "no terminals in that tab" : "no terminals");
@@ -93,18 +100,35 @@ export async function cmdList(args: string[]): Promise<void> {
 }
 
 /** One line per terminal, in columns: id, tab, what its agent is doing, banner. */
+/**
+ * One line per terminal, in columns: id, tab, what its agent is doing, and its name: on a board,
+ * the board's ("T26 Training run", "lead · …"), else its banner or title. A terminal no longer
+ * working on a task the board has in progress is marked: nothing will go on with that task.
+ */
 function printSessions(sessions: readonly SessionView[], tabs: ReadonlyMap<string, TabView>): void {
   if (sessions.length === 0) return;
   const own = process.env.SPECTRAWEAVER_SESSION_ID;
-  const rows = sessions.map((session) => [
-    `${session.id}${session.id === own ? "*" : " "}`,
-    tabs.get(session.tab)?.name ?? "",
-    session.agent ? agentText(session.agent) : stateOf(session),
-    session.banner || session.title || session.cwd,
-  ]);
+  const now = Date.now();
+  const rows = sessions.map((session) => {
+    const tab = tabs.get(session.tab);
+    const stalled = stalledHere(session, tab, now);
+    const state = (session.agent ? agentText(session.agent, now) : stateOf(session)) + (stalled.length > 0 ? `, ${stalled.join(", ")} in progress ⚠` : "");
+    return [
+      `${session.id}${session.id === own ? "*" : " "}`,
+      tab?.name ?? "",
+      state,
+      boardName(tab?.board, session.id, tab?.name ?? "")?.text || session.banner || session.title || session.cwd,
+    ];
+  });
   const widths = [0, 1, 2].map((column) => Math.max(...rows.map((row) => row[column]!.length)));
   for (const row of rows) console.log(row.map((cell, column) => (column < 3 ? cell.padEnd(widths[column]!) : cell)).join("  "));
   if (own && sessions.some((session) => session.id === own)) console.log("(* is this terminal)");
+}
+
+/** The ids of the tasks in progress a terminal no longer works on: its agent idles, waits or stopped, or none runs. */
+function stalledHere(session: SessionView, tab: TabView | undefined, now: number): string[] {
+  if (waitStates(session, now).has("working")) return [];
+  return stalledTasks(tab?.board, session.id).map((task) => task.id);
 }
 
 /** What `wait --until` takes: the ways a terminal stops working, and a limit that has lifted. */
@@ -140,8 +164,9 @@ function waitStates(session: SessionView | undefined, now: number): Set<WaitStat
  * prints them; `--until` narrows the states that count, `--changed` counts only a state entered
  * after the wait began (after a send, say, before the agent has picked it up), and `--timeout`
  * gives up with status 124. `--board` returns as well once a task of the board changes (any but
- * this terminal's own changes), and says what changed and from which terminal. It asks the
- * server once a second.
+ * this terminal's own changes), saying what changed and from which terminal, or once the
+ * terminal of a task in progress stops working while the task is still in progress: nothing
+ * would go on with it then. It asks the server once a second.
  */
 export async function cmdWait(args: string[]): Promise<void> {
   const flags = parseFlags(args, ["until", "timeout", "all", "changed", "board", "tab"]);
@@ -175,6 +200,8 @@ export async function cmdWait(args: string[]): Promise<void> {
   /** The board's tasks when the wait began, and its tab. */
   let before: Map<string, BoardTask> | undefined;
   let boardTab: string | undefined;
+  /** With --board: the terminals of tasks in progress seen working since the wait began. */
+  const busy = new Set<string>();
   for (let first = true; ; first = false) {
     const listed = await serverCall<Listing>(paths, "GET", "/api/v1/sessions");
     if (!listed) fail("wait asks the server what the agents are doing; start it with `spectraweaver up`");
@@ -198,6 +225,7 @@ export async function cmdWait(args: string[]): Promise<void> {
       const tasks = new Map((board?.tasks ?? []).map((task) => [task.id, task]));
       if (before) boardChanges = taskChanges(before, tasks, board?.lead, sessions);
       else before = tasks;
+      boardChanges.push(...stoppedWorking(board, sessions, busy, now));
     }
     const tabs = new Map(listed.tabs.map((tab) => [tab.id, tab]));
     // A terminal closed meanwhile is gone from the list: it is named by its id.
@@ -214,15 +242,56 @@ export async function cmdWait(args: string[]): Promise<void> {
     if (Date.now() >= deadline) {
       // Time to look in: each terminal waited on (with --board alone, those of the board's tab) and
       // how long it has been doing what it does, for the agent to judge what is taking too long.
+      // Those no longer working on a task in progress first: nothing will go on with those tasks.
       const watched = ids.length > 0 ? ids : listed.sessions.filter((session) => session.tab === boardTab).map((session) => session.id);
+      const stalled = watched.filter((id) => {
+        const session = sessions.get(id);
+        return session !== undefined && stalledHere(session, tabs.get(session.tab), now).length > 0;
+      });
       console.log(
-        `${timeout} passed and nothing happened. Look in on them: one doing the same thing far longer than it should (a job that hangs keeps its terminal working) may be stuck. As they are now:`,
+        `${timeout} passed and nothing happened. Look in on them: one doing the same thing far longer than it should (a job that hangs keeps its terminal working) may be stuck.`,
       );
-      show(watched);
+      const others = watched.filter((id) => !stalled.includes(id));
+      if (stalled.length > 0) {
+        console.log("\nNot working, while a task of theirs is in progress (nothing will go on with it unless someone acts):");
+        show(stalled);
+        if (others.length > 0) console.log("\nThe others:");
+      } else {
+        console.log("As they are now:");
+      }
+      show(others);
       process.exit(WAIT_TIMED_OUT);
     }
     await Bun.sleep(Math.min(WAIT_POLL_MS, Math.max(0, deadline - Date.now())));
   }
+}
+
+/**
+ * The tasks in progress whose terminal, seen working during the wait, no longer is (it went idle,
+ * waits, stopped or closed) while the task is still in progress: "T26 in progress, but its
+ * terminal 1444054a is no longer working: claude idle". The waiting terminal's own are left out.
+ */
+function stoppedWorking(
+  board: Board | undefined,
+  sessions: ReadonlyMap<string, SessionView>,
+  busy: Set<string>,
+  now: number,
+): string[] {
+  const self = process.env.SPECTRAWEAVER_SESSION_ID;
+  const lines: string[] = [];
+  const terminals = new Set((board?.tasks ?? []).flatMap((task) => (task.status === "wip" && task.session && task.session !== self ? [task.session] : [])));
+  for (const id of terminals) {
+    const session = sessions.get(id);
+    if (waitStates(session, now).has("working")) {
+      busy.add(id);
+      continue;
+    }
+    if (!busy.delete(id)) continue;
+    const tasks = stalledTasks(board, id).map((task) => task.id).join(", ");
+    const state = !session ? "it closed" : session.agent ? agentText(session.agent, now) : stateOf(session);
+    lines.push(`${tasks} in progress, but its terminal ${id} is no longer working: ${state}`);
+  }
+  return lines;
 }
 
 /**
@@ -383,6 +452,12 @@ export async function cmdBanner(args: string[]): Promise<void> {
     banner: words.join(" "),
   });
   if (!updated) fail("banners are kept by the server; start it with `spectraweaver up`");
+  // On a board, the board names it, and its window shows that rather than the banner.
+  const listed = await serverCall<Listing>(resolvePaths(), "GET", "/api/v1/sessions");
+  const tab = listed?.tabs.find((candidate) => candidate.id === updated.session.tab);
+  if (boardName(tab?.board, id, tab?.name ?? "")) {
+    console.error("note: the board names this terminal (by its task, or as its lead), and its window shows that; the banner shows once no task names it");
+  }
 }
 
 /** `show ID` brings a terminal's window out and in front; `hide ID` puts it away (in a tab with a board). */

@@ -422,7 +422,7 @@ export class BoardWindow {
     this.leadButton.hidden = !lead;
     if (lead) {
       const live = taskLive({ id: "", title: "", status: "todo", session: lead.id }, lead, now);
-      const name = lead.banner || "lead";
+      const name = "lead"; // as the board names it; its window says "lead · <board title>"
       const text = live?.text || "shell";
       // Rebuilt only when it changed: a button replaced under the pointer loses the click.
       if (this.leadButton.dataset.shown !== `${name}\n${text}\n${live?.kind}`) {
@@ -585,7 +585,9 @@ export class BoardWindow {
       if (card.className !== className) card.className = className;
       // Its content is rebuilt only when it changed: a card's text replaced under the pointer
       // would lose the click (and the double click) on it.
-      const content = JSON.stringify([compact, task.title, task.status, task.note, live?.terminal, live?.text, live?.kind]);
+      // The other tasks its terminal works on: the card names those, and not the terminal, which is this card.
+      const also = task.session ? board.tasks.filter((other) => other.session === task.session && other.id !== task.id).map((other) => other.id) : [];
+      const content = JSON.stringify([compact, task.title, task.status, task.note, live?.terminal, live?.text, live?.kind, also]);
       if (card.dataset.shown === content) continue;
       card.dataset.shown = content;
       const id = el("span", { class: "task-id" }, [task.id]);
@@ -594,15 +596,18 @@ export class BoardWindow {
         const mark = live?.alarm ? [el("span", { class: `badge agent ${live.kind}` }, [live.alarm === "red" ? "⚠" : "!"])] : [];
         card.replaceChildren(el("span", { class: "task-line" }, [id, " ", title]), ...mark);
       } else {
-        const second = live
-          ? [el("span", { class: "task-term" }, [live.terminal]), ...(live.text ? [el("span", { class: `badge agent ${live.kind}` }, [live.text])] : [])]
-          : [el("span", { class: "task-note" }, [task.note ? `${STATUS_LABEL[task.status]}: ${task.note}` : STATUS_LABEL[task.status]])];
+        const shared = also.length > 0 ? [el("span", { class: "task-term" }, [`also ${also.slice(0, 3).join(", ")}${also.length > 3 ? ` +${also.length - 3}` : ""}`])] : [];
+        const second =
+          live?.text || shared.length > 0
+            ? [...(live?.text ? [el("span", { class: `badge agent ${live.kind}` }, [live.text])] : []), ...shared]
+            : [el("span", { class: "task-note" }, [task.note ? `${STATUS_LABEL[task.status]}: ${task.note}` : STATUS_LABEL[task.status]])];
         card.replaceChildren(el("span", { class: "task-line" }, [id, " ", title]), el("span", { class: "task-live" }, second));
       }
       card.title = [
         `${task.id} ${task.title}`,
         STATUS_LABEL[task.status] + (task.note ? `: ${task.note}` : ""),
         live && `terminal ${live.terminal}${live.text ? `: ${live.text}` : ""}`,
+        also.length > 0 && `its terminal also works on ${also.join(", ")}`,
         live?.detail,
       ]
         .filter(Boolean)
@@ -630,6 +635,12 @@ export class BoardWindow {
       this.open(id);
     });
     return card;
+  }
+
+  /** Selects a task and brings its card into view (from its terminal's window). */
+  reveal(id: string): void {
+    this.select(id);
+    this.cards.get(id)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
   private select(id: string | null): void {

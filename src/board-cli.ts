@@ -53,7 +53,9 @@ The board is JSON:
   status   ${TASK_STATUSES.join(", ")}; say more in note ("waiting for review")
   after    ids of the tasks it waits for
   session  the terminal working on it (the id \`spectraweaver new\` prints); its state shows live,
-           and a task in progress whose terminal is gone or idle at its shell is marked
+           and a task in progress whose terminal is gone or idle at its shell is marked. The
+           terminal is then called by its task on its window and in ls ("T2 Refresh API"), so
+           there is no banner to keep up; banners are for terminals no task names
   note     one line on what is going on
   link     an http(s) link: a pull request, the task's folder
 
@@ -63,7 +65,7 @@ worker's terminal, it finds the tab itself); a set afterwards still replaces eve
 first board of a tab puts the board on the left and the pushing terminal on the right.
 
 Workers' terminals (run from a terminal in the tab, they land in it):
-  spectraweaver new --banner "T2: refresh API" --cwd DIR -- claude "read tasks/T2/BRIEF.md ..."
+  spectraweaver new --cwd DIR -- claude "read tasks/T2/BRIEF.md ..."
                         prints the new terminal's id. The words after the agent's name are its
                         first prompt: it starts on the task as soon as it is up, with no need
                         to wait and send it (Codex the same: -- codex "..."). In a tab with a
@@ -72,14 +74,16 @@ Workers' terminals (run from a terminal in the tab, they land in it):
   spectraweaver ls [--json] [--all]  what the agents in this tab are doing (--all: every tab's):
                                      its model, for one waiting what its dialog asks
                                      ("detail"), for one stopped by a usage limit when it lifts
-                                     ("resetsAt"; "lifted" once it has)
+                                     ("resetsAt"; "lifted" once it has); "T26 in progress ⚠"
+                                     on one no longer working while its task is in progress
   spectraweaver read ID --reply      the agent's latest reply, without the rest of the screen
   spectraweaver read ID [--lines N]  a terminal's screen as text (N: its last N lines)
   spectraweaver wait [ID...] [--board] [--until STATES] [--timeout 30m]
                         returns once one of the terminals stops working (idle, waiting,
                         stopped, exited), or with --board once a task of this tab's board
-                        changes (not by you), and says what changed and from which terminal;
-                        after 30 minutes (--timeout) anyway, with status 124: time to look in
+                        changes (not by you) or a task's terminal stops working while the
+                        task is in progress, and says what happened; after 30 minutes
+                        (--timeout) anyway, with status 124: time to look in
   spectraweaver send ID TEXT         type into a terminal (see below)
   spectraweaver show ID              bring a terminal in front of the person
 
@@ -94,8 +98,16 @@ stopped by a usage limit may not go on by itself once the limit lifts: when ls s
 
 Have workers mark their own tasks (board update ID --status done --note "..."); then
 wait --board wakes you when one does, and says which, and board show --since 30m shows what
-changed while you were away. An agent idle with a shell still running in the background
-counts as working ("a shell in background"): it carries on by itself when the shell ends.
+changed while you were away.
+
+Long jobs must close the loop: an agent that has gone idle wakes only when told to. Have
+workers start long jobs with their own background run (Claude Code's run_in_background): the
+agent counts as working meanwhile ("a shell in background") and is woken when the job ends. A
+job that has to outlive the agent (setsid, nohup) is invisible to it: then the worker also
+starts a watcher with its background run (while kill -0 PID; do sleep 60; done), which ends
+with the job and wakes it, and puts the PID and the log's path in the task's note. A worker idle while
+its task is in progress, with nothing to wake it, is marked in ls ("T26 in progress ⚠"), and
+wait --board wakes you when one goes idle: find out why and set it going again.
 
 Look in on the workers now and then (ls, their files, read --reply) to catch one going off
 track, or one that needs news from another. wait blocks until something happens, for when

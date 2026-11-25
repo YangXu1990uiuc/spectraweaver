@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AgentStatus, BoardTask, SessionView } from "../src/common/protocol.ts";
+import { boardName, stalledTasks, tasksOf } from "../src/common/board-terminals.ts";
 import { BoardError, parseBoard, stampTasks } from "../src/server/board.ts";
 import {
   type BoardLayout,
@@ -231,7 +232,8 @@ describe("a task's terminal, live", () => {
   test("shows the agent as its window does, with how long it has been idle", () => {
     const agent = (activity: AgentStatus["activity"], extra: Partial<AgentStatus> = {}) =>
       view({ agent: { name: "claude", activity, ...extra } });
-    expect(taskLive(wip, agent("working"), NOW)).toMatchObject({ terminal: "w1", text: "working", alarm: null });
+    // The terminal by its id: on a board it is named by its tasks, so its banner says nothing more.
+    expect(taskLive(wip, agent("working"), NOW)).toMatchObject({ terminal: "s1", text: "working", alarm: null });
     expect(taskLive(wip, agent("idle", { since: NOW - 30_000 }), NOW)?.text).toBe("idle");
     expect(taskLive(wip, agent("idle", { since: NOW - 18 * 60_000 }), NOW)?.text).toBe("idle 18m");
     expect(taskLive(wip, agent("waiting", { reason: "needs approval" }), NOW)).toMatchObject({ text: "needs approval", alarm: "amber" });
@@ -283,4 +285,39 @@ test("a task keeps its stamp while it says the same, and is stamped anew, with w
     ["T2", 1000, "lead0001"],
     ["T3", 2000, "work0002"],
   ]);
+});
+
+describe("what a board calls a terminal", () => {
+  const board = parseBoard(
+    {
+      title: "Login refactor",
+      tasks: [
+        { id: "T1", title: "Map the flow", status: "done", session: "w1" },
+        { id: "T2", title: "Refresh API", status: "wip", session: "w1" },
+        { id: "T3", title: "Login page", status: "todo", session: "w1" },
+        { id: "T4", title: "Tests", status: "done", session: "w2" },
+        { id: "T5", title: "Docs", status: "done", session: "w2" },
+      ],
+    },
+    NOW,
+    "lead",
+  );
+
+  test("its tasks not done, by id and title; all done, the one changed last, ticked; the lead as the lead", () => {
+    expect(boardName(board, "w1", "Work")).toEqual({ text: "T2 Refresh API · T3 Login page", task: "T2" });
+    expect(boardName(board, "w2", "Work")).toEqual({ text: "✓ T5 Docs", task: "T5" });
+    const stamped = { ...board, tasks: board.tasks.map((task) => (task.id === "T4" ? { ...task, updatedAt: NOW } : task)) };
+    expect(boardName(stamped, "w2", "Work")?.text).toBe("✓ T4 Tests");
+    expect(boardName(board, "lead", "Work")).toEqual({ text: "lead · Login refactor" });
+    expect(boardName({ ...board, title: undefined }, "lead", "Work")?.text).toBe("lead · Work board");
+    // A terminal no task names keeps its banner.
+    expect(boardName(board, "w9", "Work")).toBeUndefined();
+    expect(boardName(undefined, "w1", "Work")).toBeUndefined();
+  });
+
+  test("its tasks, and those in progress", () => {
+    expect(tasksOf(board, "w1").map((task) => task.id)).toEqual(["T1", "T2", "T3"]);
+    expect(stalledTasks(board, "w1").map((task) => task.id)).toEqual(["T2"]);
+    expect(stalledTasks(board, "w2")).toEqual([]);
+  });
 });

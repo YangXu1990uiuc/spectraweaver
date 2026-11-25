@@ -17,6 +17,7 @@ import {
   TAB_COLORS,
   type TabView,
 } from "../common/protocol.ts";
+import { boardName } from "../common/board-terminals.ts";
 import { agentLive } from "./board-live.ts";
 import { BoardWindow, boardAlarms, DEFAULT_BOARD_FRAME } from "./board-view.ts";
 import { adoptFormerSettings, el, type Grid, loadSetting, parseGrid, randomId, saveSetting } from "./dom.ts";
@@ -606,11 +607,16 @@ class Tile {
   private readonly agentBadge: HTMLSpanElement;
   private readonly focusButton: HTMLButtonElement;
   private readonly closeButton: HTMLButtonElement;
+  /** In place of the banner for a terminal the board names: what the board calls it. */
+  private readonly boardLabel: HTMLButtonElement;
+  /** The task a click on that name shows on the board. */
+  private boardTask: string | undefined;
 
   constructor(session: SessionView) {
     this.session = session;
     const grip = el("span", { class: "grip", draggable: "true", title: "Drag onto a tab to move this terminal" }, ["⠿"]);
     this.banner = el("input", { class: "banner", placeholder: "What is this terminal doing?", spellcheck: "false" });
+    this.boardLabel = el("button", { class: "board-label", type: "button", hidden: "" });
     this.subtitle = el("span", { class: "subtitle" });
     this.size = el("button", { class: "meta size-btn", type: "button" });
     this.exitBadge = el("span", { class: "badge exited", hidden: "" });
@@ -623,6 +629,7 @@ class Tile {
       grip,
       el("span", { class: "bell-dot", title: "Wants attention" }, ["●"]),
       this.banner,
+      this.boardLabel,
       this.subtitle,
       this.agentBadge,
       this.exitBadge,
@@ -655,6 +662,9 @@ class Tile {
     grip.addEventListener("dragstart", (event) => {
       event.dataTransfer?.setData(SESSION_DRAG_TYPE, this.session.id);
       if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    });
+    this.boardLabel.addEventListener("click", () => {
+      if (this.boardTask && board && boardTab === this.session.tab) board.reveal(this.boardTask);
     });
     this.banner.addEventListener("change", () => {
       send({ t: "banner", session: this.session.id, banner: this.banner.value.trim() });
@@ -772,6 +782,17 @@ class Tile {
     this.session = session;
     this.root.style.setProperty("--tile-color", session.color);
     if (document.activeElement !== this.banner) this.banner.value = session.banner;
+    // On a board, the board names it: its task, or "lead". It cannot drift from the board, as a
+    // banner written by hand could; the banner comes back once no task names it.
+    const tab = tabs.find((candidate) => candidate.id === session.tab);
+    const named = boardName(tab?.board, session.id, tab?.name ?? "");
+    this.banner.hidden = named !== undefined;
+    this.boardLabel.hidden = named === undefined;
+    this.boardTask = named?.task;
+    if (named) {
+      if (this.boardLabel.textContent !== named.text) this.boardLabel.textContent = named.text;
+      this.boardLabel.title = `${named.text}\nFrom the board: the lead changes it there.${named.task ? "\nClick to show the task on the board." : ""}`;
+    }
     this.subtitle.textContent = session.title;
     this.subtitle.title = session.title;
     this.size.textContent = `${session.cols}×${session.rows}`;

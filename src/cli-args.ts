@@ -61,12 +61,14 @@ Terminals (for scripts and coding agents too; ID is a terminal's id, from \`ls\`
                         print it; STATES, comma-separated: idle, waiting, stopped, exited (all
                         four by default), or lifted (a usage limit that has). --changed counts
                         only a state entered after the wait began, as after a send. --board:
-                        return too once a task of the board changes, not by this terminal, and
-                        say what changed. After --timeout (30m by default; none waits for
+                        return too once a task of the board changes, not by this terminal, or
+                        a task's terminal stops working while the task is in progress, and
+                        say what happened. After --timeout (30m by default; none waits for
                         ever) it returns anyway, with status 124 and how long each has been
                         doing what it does: time to look in
   spectraweaver banner ID TEXT
-                        set a terminal's banner
+                        set a terminal's banner (a terminal a board's task names shows its task
+                        instead, until no task names it)
   spectraweaver resize ID COLSxROWS
                         change a terminal's size; the program is told and redraws
   spectraweaver show ID   bring a terminal's window out, in front

@@ -11,7 +11,7 @@ import type { AgentStatus, BoardTask, SessionView } from "../common/protocol.ts"
 export type LiveKind = "working" | "idle" | "waiting" | "stopped";
 
 export interface TaskLive {
-  /** The terminal's name on the card: its banner, else its id. */
+  /** The terminal, by its id: on a board it is named by its tasks, so a banner says nothing more. */
   terminal: string;
   /** What it is doing, in a few words ("working", "idle 12m", "⚠ at capacity"); empty for nothing to say. */
   text: string;
@@ -54,7 +54,7 @@ export function taskLive(task: BoardTask, session: SessionView | undefined, now:
       ? { terminal: task.session, text: "⚠ terminal closed", kind: "stopped", alarm: "red" }
       : { terminal: task.session, text: "closed", kind: "idle", alarm: null };
   }
-  const terminal = session.banner || session.id;
+  const terminal = session.id;
   if (session.exited) {
     return working
       ? { terminal, text: "⚠ terminal exited", kind: "stopped", alarm: "red" }
