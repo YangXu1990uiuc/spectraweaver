@@ -123,6 +123,35 @@ function link(value: unknown, id: string): string {
   return url.href;
 }
 
+/** What a task says, without when and by whom it was changed: two tasks saying the same are one unchanged. */
+function said(task: BoardTask): string {
+  return JSON.stringify([task.title, task.status, task.after ?? [], task.session ?? "", task.note ?? "", task.link ?? ""]);
+}
+
+/** Whether two versions of a task say the same, whenever and by whomever they were stamped. */
+export function sameTask(a: BoardTask, b: BoardTask): boolean {
+  return said(a) === said(b);
+}
+
+/**
+ * Stamps a board's tasks with when they changed and from which terminal: a task that says what
+ * it said in `previous` keeps its stamp, any other is stamped `now` and `by`.
+ */
+export function stampTasks(board: Board, previous: Board | undefined, now: number, by: string | undefined): void {
+  const before = new Map((previous?.tasks ?? []).map((task) => [task.id, task]));
+  for (const task of board.tasks) {
+    const old = before.get(task.id);
+    if (old && said(old) === said(task)) {
+      if (old.updatedAt !== undefined) task.updatedAt = old.updatedAt;
+      if (old.updatedBy !== undefined) task.updatedBy = old.updatedBy;
+    } else {
+      task.updatedAt = now;
+      if (by) task.updatedBy = by;
+      else delete task.updatedBy;
+    }
+  }
+}
+
 /** A circle of tasks each waiting for the next, if there is one: the ids, the first repeated at the end. */
 function findCycle(tasks: readonly BoardTask[]): string[] | null {
   const after = new Map(tasks.map((task) => [task.id, task.after ?? []]));

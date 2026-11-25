@@ -55,6 +55,30 @@ test("tabs can be created, renamed, recoloured, regridded and reordered", () => 
   expect(new MetaStore(file).tabs().map((tab) => tab.name)).toEqual(["infra", "Main"]);
 });
 
+test("tab names stay unique, whatever their case: a taken name is counted on", () => {
+  const { meta } = store();
+  const named = (id: string, name: string) => {
+    meta.createTab({ id, name, color: "#2ea043", grid: "2x2" });
+    return meta.tabs().find((tab) => tab.id === id)!.name;
+  };
+  expect(named("aaaaaaaa", "Tab 2")).toBe("Tab 2");
+  expect(named("bbbbbbbb", "tab 2")).toBe("tab 3");
+  expect(named("cccccccc", "Project")).toBe("Project");
+  expect(named("dddddddd", "Project")).toBe("Project 2");
+  // Renaming to a name another tab has; renaming a tab to its own name changes nothing.
+  meta.updateTab("cccccccc", { name: "Tab 2" });
+  expect(meta.tabs().find((tab) => tab.id === "cccccccc")!.name).toBe("Tab 4");
+  meta.updateTab("aaaaaaaa", { name: "Tab 2" });
+  expect(meta.tabs().find((tab) => tab.id === "aaaaaaaa")!.name).toBe("Tab 2");
+});
+
+test("a meta.json from before unique names has its repeated names counted on", () => {
+  const tab = (id: string, name: string) => ({ id, name, color: "#2ea043", grid: "2x2" });
+  const { meta } = store({ version: 2, tabs: [tab("aaaaaaaa", "Tab 2"), tab("bbbbbbbb", "Tab 2"), tab("cccccccc", "Tab 3")], sessions: {} });
+  // The repeat takes a name no tab has; the tab named "Tab 3" all along keeps its name.
+  expect(meta.tabs().map((found) => found.name)).toEqual(["Tab 2", "Tab 4", "Tab 3"]);
+});
+
 test("deleting a tab moves its sessions to the neighbour and never deletes the last tab", () => {
   const { meta } = store();
   const main = meta.tabs()[0]!.id;

@@ -15,6 +15,8 @@
 //   /error KIND        the turn ends with an error of that kind (Claude Code's `error`, Codex's
 //                      `codex_error_info`)
 //   /warn              Codex: the cyber warning shows
+//   /background        Claude Code: its turn is over but a shell it started runs on
+//   /limit             Claude Code: a 5-hour limit stopped it two hours ago, and lifted an hour ago
 //   anything else      a prompt; the turn it starts ends at once with a reply
 // Every line it gets is appended to $FAKE_AGENT_LOG as {name, line}; a paste arrives as one line.
 
@@ -84,6 +86,23 @@ function act(line: string): void {
         return setStatus("busy");
       case "/wait":
         return setStatus("waiting", "dialog open");
+      case "/background":
+        return setStatus("shell");
+      case "/limit": {
+        const lifted = new Date(Date.now() - 3_600_000);
+        const hour = lifted.getUTCHours();
+        const clock = `${hour % 12 || 12}:${String(lifted.getUTCMinutes()).padStart(2, "0")}${hour < 12 ? "am" : "pm"}`;
+        const words = `You've hit your 5-hour limit · resets ${clock} (UTC)`;
+        record({
+          type: "assistant",
+          isApiErrorMessage: true,
+          error: "rate_limit",
+          timestamp: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+          message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: words }] },
+        });
+        show(words);
+        return setStatus("idle");
+      }
       case "/error":
         record({
           type: "assistant",

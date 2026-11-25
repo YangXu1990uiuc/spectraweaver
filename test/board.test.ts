@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AgentStatus, BoardTask, SessionView } from "../src/common/protocol.ts";
-import { BoardError, parseBoard } from "../src/server/board.ts";
+import { BoardError, parseBoard, stampTasks } from "../src/server/board.ts";
 import {
   type BoardLayout,
   closestInOrder,
@@ -269,4 +269,18 @@ test("a usage limit's badge says when it lifts, then that it has", () => {
   expect(agentLive("w1", limit, resetsAt + 1000)).toMatchObject({ text: "⚠ usage limit · lifted", alarm: "red" });
   // Another day names the day.
   expect(clockTime(now + 3 * 86_400_000, now)).toContain(new Date(now + 3 * 86_400_000).toLocaleDateString([], { weekday: "short" }));
+});
+
+test("a task keeps its stamp while it says the same, and is stamped anew, with who, once it changes", () => {
+  const first = parseBoard([{ id: "T1", status: "wip" }, { id: "T2", status: "todo" }], 1000, "lead0001");
+  stampTasks(first, undefined, 1000, "lead0001");
+  expect(first.tasks.map((task) => [task.updatedAt, task.updatedBy])).toEqual([[1000, "lead0001"], [1000, "lead0001"]]);
+  // Pushed again with T1 done and T3 new; stamps an agent sends are not taken.
+  const second = parseBoard([{ id: "T1", status: "done" }, { id: "T2", status: "todo", updatedAt: 5, updatedBy: "x" }, { id: "T3", status: "todo" }], 2000);
+  stampTasks(second, first, 2000, "work0002");
+  expect(second.tasks.map((task) => [task.id, task.updatedAt, task.updatedBy])).toEqual([
+    ["T1", 2000, "work0002"],
+    ["T2", 1000, "lead0001"],
+    ["T3", 2000, "work0002"],
+  ]);
 });

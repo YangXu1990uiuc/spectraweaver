@@ -170,6 +170,22 @@ test("terminals opened from the command line land in their tab, and their agents
   // Its latest reply alone: both parts of the message, without the rest of the screen.
   expect(await cli("read", id, "--reply")).toBe("done\n\n(you said: carry on)\n");
 
+  // A shell left running in the background: still working, so a wait does not return.
+  await cli("send", id, "/background");
+  await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "working", reason: "a shell in background" }), "a background shell");
+  expect((await run(["wait", id, "--timeout", "1s"])).code).toBe(124);
+  // A usage limit that has lifted: ls says so, and wait --until lifted returns.
+  await cli("send", id, "/limit");
+  await eventually(
+    () => agentOf(id),
+    (agent) => expectAgent(agent, { activity: "stopped", reason: "usage limit" }) && (agent?.resetsAt ?? Infinity) < Date.now(),
+    "a limit that has lifted",
+  );
+  expect(await cli("ls")).toMatch(/claude\S* stopped: usage limit, lifted (\d{4}-\d\d-\d\d )?\d\d:\d\d/);
+  expect(await cli("wait", id, "--until", "lifted", "--timeout", "5s")).toContain("usage limit");
+  await cli("send", id, "continue");
+  await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "idle" }), "claude going on");
+
   // Several lines go in as one paste, then Enter.
   await run(["send", id, "-"], "first line\nsecond line\n");
   await eventually(async () => typedLines(), (lines) => lines.includes("first line\nsecond line"), "the paste");
@@ -190,6 +206,9 @@ test("wait returns once a terminal stops working, or gives up", async () => {
   await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "idle" }), "claude idle");
   // Idle already: at once.
   expect(await cli("wait", id)).toMatch(new RegExp(`${id}\\s+Waits\\s+claude idle`));
+  // Waiting for ever has to be asked for; idle already, it returns at once all the same.
+  expect((await run(["wait", id, "--timeout", "none"])).code).toBe(0);
+  expect((await run(["wait", id, "--timeout", "soon"])).err).toContain("--timeout takes a duration");
   const unknown = await run(["wait", "ffffffff"]);
   expect(unknown.code).toBe(1);
   expect(unknown.err).toContain("no such terminal: ffffffff");
@@ -198,7 +217,7 @@ test("wait returns once a terminal stops working, or gives up", async () => {
   await eventually(() => agentOf(id), (agent) => expectAgent(agent, { activity: "working" }), "claude working");
   const timedOut = await run(["wait", id, "--timeout", "1s"]);
   expect(timedOut.code).toBe(124);
-  expect(timedOut.err).toContain("timed out after 1s");
+  expect(timedOut.out).toContain("1s passed and nothing happened. Look in on them");
   expect(timedOut.out).toContain("claude working");
 
   // A wait running when the agent stops returns then; --until picks the states that count.
@@ -296,23 +315,56 @@ test("a coordinating agent's board: pushed from its terminal, with its workers p
 
   // One task at a time, from any terminal of the tab (a worker marking its own task, say).
   const asWorker = { SPECTRAWEAVER_SESSION_ID: worker };
+  const beforeUpdates = new Date().toISOString();
   const updated = await run(["board", "update", "T3", "--status", "wip", "--note", "API merged, starting the page"], undefined, asWorker);
   expect(updated.out.trim()).toBe("T3 wip; board of “Project”: 4 tasks: 1 done, 3 wip");
   const taskOf = async (id: string) => (await listing()).tabs.find((candidate) => candidate.id === tab.id)?.board?.tasks.find((task) => task.id === id);
-  expect(await taskOf("T3")).toEqual({ id: "T3", title: "Login page", status: "wip", after: ["T2"], note: "API merged, starting the page" });
+  expect(await taskOf("T3")).toEqual({
+    id: "T3",
+    title: "Login page",
+    status: "wip",
+    after: ["T2"],
+    note: "API merged, starting the page",
+    updatedAt: expect.any(Number),
+    updatedBy: worker,
+  });
   // The lead stays the lead, whoever changed a task.
   expect((await listing()).tabs.find((candidate) => candidate.id === tab.id)?.board?.lead).toBe(lead);
   await run(["board", "update", "T3", "--note", ""], undefined, asWorker);
   expect((await taskOf("T3"))?.note).toBeUndefined();
   // A task the board does not have is added, given its status.
   expect((await run(["board", "update", "T5", "--status", "todo", "--title", "Docs", "--after", "T3,T4"], undefined, asLead)).out).toContain("5 tasks");
-  expect(await taskOf("T5")).toEqual({ id: "T5", title: "Docs", status: "todo", after: ["T3", "T4"] });
+  expect(await taskOf("T5")).toEqual({ id: "T5", title: "Docs", status: "todo", after: ["T3", "T4"], updatedAt: expect.any(Number), updatedBy: lead });
   const unknown = await run(["board", "update", "T9", "--note", "x"], undefined, asLead);
   expect(unknown.code).toBe(1);
   expect(unknown.err).toContain('there is no task "T9" on the board; give its status to add it');
   const circle = await run(["board", "update", "T1", "--after", "T5"], undefined, asLead);
   expect(circle.err).toContain("the task was not changed: these tasks wait for each other in a circle");
   expect((await run(["board", "update", "T5"], undefined, asLead)).err).toContain("say what to change");
+
+  // Each task says when it changed and from which terminal; --since shows only those changed since.
+  type Shown = { tasks: Array<{ id: string; updatedAt?: string; updatedBy?: string }> };
+  const stamped = (JSON.parse(await cli("board", "show", "--tab", "Project")) as Shown).tasks.find((task) => task.id === "T3")!;
+  expect(stamped.updatedBy).toBe(worker);
+  expect(stamped.updatedAt).toMatch(/^\d{4}-\d\d-\d\dT/);
+  const since = JSON.parse(await cli("board", "show", "--tab", "Project", "--since", beforeUpdates)) as Shown;
+  expect(since.tasks.map((task) => task.id)).toEqual(["T3", "T5"]);
+  expect((await run(["board", "show", "--tab", "Project", "--since", "soon"])).err).toContain("--since takes");
+
+  // wait --board wakes the lead when a worker changes a task, not when it changes one itself.
+  const watching = run(["wait", "--board", "--timeout", "20s"], undefined, asLead);
+  await Bun.sleep(1500);
+  await run(["board", "update", "T5", "--note", "the lead's own"], undefined, asLead);
+  await Bun.sleep(1500);
+  await run(["board", "update", "T2", "--status", "done", "--note", "refresh API merged"], undefined, asWorker);
+  const woken = await watching;
+  expect(woken.code).toBe(0);
+  expect(woken.out.trim()).toBe(`T2 wip → done · by ${worker} (w1) · note: refresh API merged`);
+  // Nothing happening: it wakes anyway, listing the tab's terminals for a look.
+  const nothing = await run(["wait", "--board", "--timeout", "1s"], undefined, asLead);
+  expect(nothing.code).toBe(124);
+  expect(nothing.out).toContain(lead);
+  expect(nothing.out).toContain(worker);
 
   // A shell has no reply to read.
   const noAgent = await run(["read", worker, "--reply"]);
@@ -338,6 +390,26 @@ test("a coordinating agent's board: pushed from its terminal, with its workers p
   expect((await session(quiet))?.hidden).toBeUndefined();
   for (const id of [lead, worker, quiet, shown]) await cli("close", id);
 }, 60_000);
+
+test("ls from a terminal lists its own tab, and says how many it leaves out; --all lists every tab", async () => {
+  const here = (await cli("new", "--tab", "Here", "--cwd", project)).trim();
+  const there = (await cli("new", "--tab", "There", "--cwd", project)).trim();
+  const fromHere = { SPECTRAWEAVER_SESSION_ID: here };
+  const scoped = (await run(["ls"], undefined, fromHere)).out;
+  expect(scoped).toContain(here);
+  expect(scoped).not.toContain(there);
+  expect(scoped).toMatch(/\(this tab only; \d+ more terminals? (is|are) in other tabs: --all lists them\)/);
+  const json = JSON.parse((await run(["ls", "--json"], undefined, fromHere)).out) as { sessions: SessionView[]; tabs: TabView[]; elsewhere: number };
+  expect(json.sessions.map((session) => session.id)).toEqual([here]);
+  expect(json.tabs.map((tab) => tab.name)).toEqual(["Here"]);
+  expect(json.elsewhere).toBeGreaterThan(0);
+  expect((await run(["ls", "--all"], undefined, fromHere)).out).toContain(there);
+  expect((await run(["ls", "--tab", "there"], undefined, fromHere)).out).toContain(there);
+  expect((await run(["ls", "--tab", "There", "--all"], undefined, fromHere)).err).toContain("--tab or --all, not both");
+  // Outside SpectraWeaver's terminals: every tab, as before.
+  expect(await cli("ls")).toContain(there);
+  for (const id of [here, there]) await cli("close", id);
+});
 
 test("commands say plainly what is wrong", async () => {
   const missing = await run(["read", "ffffffff"]);

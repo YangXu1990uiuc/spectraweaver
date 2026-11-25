@@ -8,12 +8,21 @@
 
 import { resolve } from "node:path";
 import { ownTab } from "./board-cli.ts";
-import { fail, flag, parseFlags } from "./cli-args.ts";
+import { duration, elapsed, fail, flag, parseFlags } from "./cli-args.ts";
 import { shellQuote } from "./server/agents.ts";
 import type { AgentReply } from "./server/control-api.ts";
 import { daemonCall, daemonHello, serverCall } from "./client.ts";
 import { type Paths, resolvePaths } from "./common/paths.ts";
-import { type AgentStatus, NEW_TERMINAL_SIZE, type ScreenText, type SessionInfo, type SessionView, type TabView } from "./common/protocol.ts";
+import {
+  type AgentStatus,
+  type BoardTask,
+  NEW_TERMINAL_SIZE,
+  type ScreenText,
+  type SessionInfo,
+  type SessionView,
+  type TabView,
+} from "./common/protocol.ts";
+import { sameTask } from "./server/board.ts";
 
 interface Listing {
   sessions: SessionView[];
@@ -40,8 +49,14 @@ const KEYS: Record<string, string> = {
   "ctrl-d": "\x04",
 };
 
+/**
+ * `ls`: the terminals of one tab, or of all. Run in a SpectraWeaver terminal it lists that
+ * terminal's tab unless told otherwise (--tab, --all): a coordinating agent sees its workers,
+ * not the work of other tabs, and hears how many it does not see.
+ */
 export async function cmdList(args: string[]): Promise<void> {
-  const flags = parseFlags(args, ["json", "tab"]);
+  const flags = parseFlags(args, ["json", "tab", "all"]);
+  if (flag(flags, "tab") !== undefined && flag(flags, "all") !== undefined) fail("--tab or --all, not both");
   const paths = resolvePaths();
   const listed = await serverCall<Listing>(paths, "GET", "/api/v1/sessions");
   if (!listed) {
@@ -61,18 +76,20 @@ export async function cmdList(args: string[]): Promise<void> {
   }
   const wanted = flag(flags, "tab")?.trim().toLowerCase();
   const tabs = new Map(listed.tabs.map((tab) => [tab.id, tab]));
-  const sessions = wanted
-    ? listed.sessions.filter((session) => [session.tab, tabs.get(session.tab)?.name.toLowerCase()].includes(wanted))
-    : listed.sessions;
+  const own = process.env.SPECTRAWEAVER_SESSION_ID;
+  const ownTab = own && flag(flags, "all") === undefined ? listed.sessions.find((session) => session.id === own)?.tab : undefined;
+  const inScope = (tab: TabView) => (wanted ? [tab.id, tab.name.toLowerCase()].includes(wanted) : ownTab ? tab.id === ownTab : true);
+  const shownTabs = listed.tabs.filter(inScope);
+  const sessions = listed.sessions.filter((session) => shownTabs.some((tab) => tab.id === session.tab));
+  // Only when the tab was not asked for: the terminals left out, so their being there is no surprise.
+  const elsewhere = !wanted && ownTab ? listed.sessions.length - sessions.length : 0;
   if (flag(flags, "json")) {
-    console.log(JSON.stringify({ sessions, tabs: listed.tabs }, null, 2));
+    console.log(JSON.stringify({ sessions, tabs: shownTabs, ...(ownTab && !wanted ? { elsewhere } : {}) }, null, 2));
     return;
   }
-  if (sessions.length === 0) {
-    console.log(wanted ? "no terminals in that tab" : "no terminals");
-    return;
-  }
-  printSessions(sessions, tabs);
+  if (sessions.length === 0) console.log(wanted || ownTab ? "no terminals in that tab" : "no terminals");
+  else printSessions(sessions, tabs);
+  if (elsewhere > 0) console.log(`(this tab only; ${elsewhere} more terminal${elsewhere === 1 ? " is" : "s are"} in other tabs: --all lists them)`);
 }
 
 /** One line per terminal, in columns: id, tab, what its agent is doing, banner. */
@@ -90,53 +107,74 @@ function printSessions(sessions: readonly SessionView[], tabs: ReadonlyMap<strin
   if (own && sessions.some((session) => session.id === own)) console.log("(* is this terminal)");
 }
 
-/** What `wait` can wait for: the states a terminal leaves working for. */
-const WAIT_STATES = ["idle", "waiting", "stopped", "exited"] as const;
-type WaitState = (typeof WAIT_STATES)[number] | "working";
+/** What `wait --until` takes: the ways a terminal stops working, and a limit that has lifted. */
+const WAIT_STATES = ["idle", "waiting", "stopped", "exited", "lifted"] as const;
+type WaitState = (typeof WAIT_STATES)[number];
+/** By default, any way of no longer working (a lifted limit is a stop, so it counts already). */
+const DEFAULT_UNTIL: readonly WaitState[] = ["idle", "waiting", "stopped", "exited"];
 const WAIT_POLL_MS = 1000;
+/**
+ * A wait wakes up after this long even if nothing happened, for its agent to look in on
+ * everything: a job that hangs keeps its terminal working, and nothing else would wake it.
+ */
+const WAIT_DEFAULT_TIMEOUT = "30m";
 /** The exit status of a wait that timed out, as timeout(1) has it. */
 export const WAIT_TIMED_OUT = 124;
 
 /**
- * A terminal's state for `wait`: its agent's activity (one not known yet counts as working);
- * without an agent, whether its shell is at a prompt.
+ * The states a terminal is in, for `wait`: its agent's activity (one not known yet, or idle with
+ * a shell in the background, counts as working, as the server reports it); a stop whose limit
+ * has lifted is "lifted" too; without an agent, whether its shell is at a prompt.
  */
-function waitState(session: SessionView | undefined): WaitState {
-  if (!session || session.exited) return "exited";
-  if (session.agent) return session.agent.activity === "unknown" ? "working" : session.agent.activity;
-  return session.atPrompt ? "idle" : "working";
-}
-
-/** "90s", "30m", "2h", or seconds. */
-function duration(text: string): number {
-  const match = /^(\d+(?:\.\d+)?)(s|m|h)?$/.exec(text.trim());
-  if (!match) fail(`--timeout takes a duration such as 90s, 30m or 2h, not ${JSON.stringify(text)}`);
-  return Number(match[1]) * { s: 1000, m: 60_000, h: 3_600_000 }[(match[2] ?? "s") as "s" | "m" | "h"];
+function waitStates(session: SessionView | undefined, now: number): Set<WaitState | "working"> {
+  if (!session || session.exited) return new Set(["exited"]);
+  const agent = session.agent;
+  if (!agent) return new Set([session.atPrompt ? "idle" : "working"]);
+  if (agent.activity === "unknown") return new Set(["working"]);
+  if (agent.activity === "stopped" && agent.resetsAt !== undefined && agent.resetsAt <= now) return new Set(["stopped", "lifted"]);
+  return new Set([agent.activity]);
 }
 
 /**
  * `wait ID...` returns once one of the terminals stops working (`--all`: once all have), and
  * prints them; `--until` narrows the states that count, `--changed` counts only a state entered
  * after the wait began (after a send, say, before the agent has picked it up), and `--timeout`
- * gives up with status 124. It asks the server once a second.
+ * gives up with status 124. `--board` returns as well once a task of the board changes (any but
+ * this terminal's own changes), and says what changed and from which terminal. It asks the
+ * server once a second.
  */
 export async function cmdWait(args: string[]): Promise<void> {
-  const flags = parseFlags(args, ["until", "timeout", "all", "changed"]);
+  const flags = parseFlags(args, ["until", "timeout", "all", "changed", "board", "tab"]);
   const ids = [...new Set(flags.rest)];
-  if (ids.length === 0) fail("usage: spectraweaver wait ID... [--until idle,waiting,stopped,exited] [--all] [--changed] [--timeout 30m]");
+  const watchBoard = flag(flags, "board") !== undefined;
+  if (ids.length === 0 && !watchBoard) {
+    fail("usage: spectraweaver wait [ID...] [--board [--tab NAME]] [--until idle,waiting,stopped,exited,lifted] [--all] [--changed] [--timeout 30m]");
+  }
+  if (flag(flags, "tab") !== undefined && !watchBoard) fail("--tab says which board to watch: give --board too");
   const until = new Set<WaitState>();
-  for (const word of (flag(flags, "until") ?? WAIT_STATES.join(",")).split(",")) {
+  const asked = flag(flags, "until");
+  for (const word of asked === undefined ? DEFAULT_UNTIL : asked.split(",")) {
     const state = word.trim().toLowerCase();
-    if (!WAIT_STATES.includes(state as (typeof WAIT_STATES)[number])) fail(`--until takes ${WAIT_STATES.join(", ")}, not ${JSON.stringify(word)}`);
+    if (!WAIT_STATES.includes(state as WaitState)) fail(`--until takes ${WAIT_STATES.join(", ")}, not ${JSON.stringify(word)}`);
     until.add(state as WaitState);
   }
-  const timeout = flag(flags, "timeout");
-  const deadline = timeout === undefined ? Infinity : Date.now() + duration(timeout);
+  // "none" waits for ever, which has to be asked for.
+  const timeout = flag(flags, "timeout") ?? WAIT_DEFAULT_TIMEOUT;
+  const deadline = timeout.trim().toLowerCase() === "none" ? Infinity : Date.now() + duration(timeout, "--timeout");
   const all = flag(flags, "all") !== undefined;
   const changed = flag(flags, "changed") !== undefined;
   const paths = resolvePaths();
+  let boardQuery: string | undefined;
+  if (watchBoard) {
+    const tab = flag(flags, "tab")?.trim() || (await ownTab(paths));
+    if (!tab) fail("--board: say which tab's board with --tab NAME (in a SpectraWeaver terminal, its own tab is the default)");
+    boardQuery = `/api/v1/board?tab=${encodeURIComponent(tab)}`;
+  }
   /** With --changed: the terminals seen outside the states waited for since the wait began. */
   const moved = new Set<string>();
+  /** The board's tasks when the wait began, and its tab. */
+  let before: Map<string, BoardTask> | undefined;
+  let boardTab: string | undefined;
   for (let first = true; ; first = false) {
     const listed = await serverCall<Listing>(paths, "GET", "/api/v1/sessions");
     if (!listed) fail("wait asks the server what the agents are doing; start it with `spectraweaver up`");
@@ -145,38 +183,94 @@ export async function cmdWait(args: string[]): Promise<void> {
       const unknown = ids.filter((id) => !sessions.has(id));
       if (unknown.length > 0) fail(`no such terminal: ${unknown.join(", ")} (\`spectraweaver ls\` lists them)`);
     }
+    const now = Date.now();
     const reached = ids.filter((id) => {
-      const state = waitState(sessions.get(id));
-      if (!until.has(state)) moved.add(id);
-      return until.has(state) && (!changed || moved.has(id));
+      const states = waitStates(sessions.get(id), now);
+      const counts = [...states].some((state) => until.has(state as WaitState));
+      if (!counts) moved.add(id);
+      return counts && (!changed || moved.has(id));
     });
+    let boardChanges: string[] = [];
+    if (boardQuery) {
+      const found = (await serverCall<{ tab: TabView }>(paths, "GET", boardQuery))!.tab;
+      const board = found.board;
+      boardTab = found.id;
+      const tasks = new Map((board?.tasks ?? []).map((task) => [task.id, task]));
+      if (before) boardChanges = taskChanges(before, tasks, board?.lead, sessions);
+      else before = tasks;
+    }
     const tabs = new Map(listed.tabs.map((tab) => [tab.id, tab]));
     // A terminal closed meanwhile is gone from the list: it is named by its id.
     const show = (list: string[]) => {
       printSessions(list.flatMap((id) => sessions.get(id) ?? []), tabs);
       for (const id of list) if (!sessions.has(id)) console.log(`${id}   closed`);
     };
-    if (all ? reached.length === ids.length : reached.length > 0) {
-      show(reached);
+    const terminalsDone = ids.length > 0 && (all ? reached.length === ids.length : reached.length > 0);
+    if (boardChanges.length > 0 || terminalsDone) {
+      for (const line of boardChanges) console.log(line);
+      if (terminalsDone) show(reached);
       return;
     }
     if (Date.now() >= deadline) {
-      console.error(`timed out after ${timeout}; as they are now:`);
-      show(ids);
+      // Time to look in: each terminal waited on (with --board alone, those of the board's tab) and
+      // how long it has been doing what it does, for the agent to judge what is taking too long.
+      const watched = ids.length > 0 ? ids : listed.sessions.filter((session) => session.tab === boardTab).map((session) => session.id);
+      console.log(
+        `${timeout} passed and nothing happened. Look in on them: one doing the same thing far longer than it should (a job that hangs keeps its terminal working) may be stuck. As they are now:`,
+      );
+      show(watched);
       process.exit(WAIT_TIMED_OUT);
     }
     await Bun.sleep(Math.min(WAIT_POLL_MS, Math.max(0, deadline - Date.now())));
   }
 }
 
-/** "claude/opus-5-5 stopped: usage limit, resets 22:30 (cyber flag)". */
+/**
+ * What changed on a board, one line a task: "T13 wip → done · by 1444054a (T13: analysis) ·
+ * note: …", "T24 added (todo): …", "T7 removed". Changes this terminal made are left out: a
+ * coordinator waiting on its board is not woken by its own pushes.
+ */
+function taskChanges(
+  before: ReadonlyMap<string, BoardTask>,
+  after: ReadonlyMap<string, BoardTask>,
+  lead: string | undefined,
+  sessions: ReadonlyMap<string, SessionView>,
+): string[] {
+  const self = process.env.SPECTRAWEAVER_SESSION_ID;
+  const by = (task: BoardTask) => {
+    if (!task.updatedBy) return "";
+    const banner = sessions.get(task.updatedBy)?.banner;
+    return ` · by ${task.updatedBy}${banner ? ` (${banner})` : ""}`;
+  };
+  const lines: string[] = [];
+  for (const task of after.values()) {
+    if (self && task.updatedBy === self) continue;
+    const old = before.get(task.id);
+    if (!old) {
+      lines.push(`${task.id} added (${task.status}): ${task.title}${by(task)}`);
+      continue;
+    }
+    if (sameTask(old, task)) continue;
+    const status = old.status === task.status ? task.status : `${old.status} → ${task.status}`;
+    const note = task.note !== old.note ? (task.note ? ` · note: ${task.note}` : " · note removed") : "";
+    const others = (["title", "after", "session", "link"] as const).filter((field) => JSON.stringify(old[field]) !== JSON.stringify(task[field]));
+    lines.push(`${task.id} ${status}${by(task)}${note}${others.length > 0 ? ` · changed: ${others.join(", ")}` : ""}`);
+  }
+  // A task goes only with a whole board pushed, from the lead.
+  if (!(self && lead === self)) for (const id of before.keys()) if (!after.has(id)) lines.push(`${id} removed`);
+  return lines;
+}
+
+/** "claude/opus-5-5 working 6h50m: a shell in background", "… stopped 2h: usage limit, resets 22:30 (cyber flag)". */
 function agentText(agent: AgentStatus, now = Date.now()): string {
   const model = agent.model ? `/${agent.model.replace(/^claude-/, "")}` : "";
+  // How long it has been doing it, from when the server first saw it so: a minute or more.
+  const age = agent.since !== undefined && now - agent.since >= 60_000 ? ` ${elapsed(now - agent.since)}` : "";
   const reason = agent.reason ? `: ${agent.reason}` : "";
   const resets =
     agent.resetsAt === undefined ? "" : `, ${agent.resetsAt > now ? "resets" : "lifted"} ${localTime(agent.resetsAt, now)}`;
   const warning = agent.warning ? ` (${agent.warning})` : "";
-  return `${agent.name}${model} ${agent.activity}${reason}${resets}${warning}`;
+  return `${agent.name}${model} ${agent.activity}${age}${reason}${resets}${warning}`;
 }
 
 /** "22:30" today, "2026-11-24 22:30" another day, in this machine's time. */

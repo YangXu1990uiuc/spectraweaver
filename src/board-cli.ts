@@ -6,7 +6,7 @@
 // Its help is written for that agent, who reads it to learn the format.
 
 import { readFileSync } from "node:fs";
-import { fail, flag, parseFlags } from "./cli-args.ts";
+import { duration, fail, flag, parseFlags } from "./cli-args.ts";
 import { serverCall } from "./client.ts";
 import { type Paths, resolvePaths } from "./common/paths.ts";
 import { type Board, type SessionView, TASK_STATUSES, type TabView, type TaskStatus } from "./common/protocol.ts";
@@ -26,8 +26,10 @@ and how often the board is pushed are up to the agent and its prompt.
                              [--session ID] [--link URL] [--tab NAME]
                         change one task, or add it (with --status) if the board has no
                         task ID; "" removes a field, IDS is comma-separated
-  spectraweaver board show [--tab NAME]
-                        print the board as JSON
+  spectraweaver board show [--since 30m | --since TIME] [--tab NAME]
+                        print the board as JSON; each task says when it last changed and
+                        from which terminal (updatedAt, updatedBy); --since: only those changed
+                        since then
   spectraweaver board clear [--tab NAME]
                         remove the board
 
@@ -61,17 +63,24 @@ worker's terminal, it finds the tab itself); a set afterwards still replaces eve
 first board of a tab puts the board on the left and the pushing terminal on the right.
 
 Workers' terminals (run from a terminal in the tab, they land in it):
-  spectraweaver new --banner "T2: refresh API" --cwd DIR -- claude
-                        prints the new terminal's id; in a tab with a board it starts put
-                        away, and the person opens it from its task (--show to show it)
-  spectraweaver send ID "read tasks/T2/BRIEF.md; write tasks/T2/REPORT.md when done"
-  spectraweaver ls [--json]          what every terminal's agent is doing: its model, and for
-                                     one waiting, what its dialog asks ("detail"); for one
-                                     stopped by a usage limit, when it lifts ("resetsAt")
+  spectraweaver new --banner "T2: refresh API" --cwd DIR -- claude "read tasks/T2/BRIEF.md ..."
+                        prints the new terminal's id. The words after the agent's name are its
+                        first prompt: it starts on the task as soon as it is up, with no need
+                        to wait and send it (Codex the same: -- codex "..."). In a tab with a
+                        board it starts put away, and the person opens it from its task
+                        (--show to show it)
+  spectraweaver ls [--json] [--all]  what the agents in this tab are doing (--all: every tab's):
+                                     its model, for one waiting what its dialog asks
+                                     ("detail"), for one stopped by a usage limit when it lifts
+                                     ("resetsAt"; "lifted" once it has)
   spectraweaver read ID --reply      the agent's latest reply, without the rest of the screen
   spectraweaver read ID [--lines N]  a terminal's screen as text (N: its last N lines)
-  spectraweaver wait ID... [--timeout 30m]
-                        returns once one of them stops working: idle, waiting, stopped, exited
+  spectraweaver wait [ID...] [--board] [--until STATES] [--timeout 30m]
+                        returns once one of the terminals stops working (idle, waiting,
+                        stopped, exited), or with --board once a task of this tab's board
+                        changes (not by you), and says what changed and from which terminal;
+                        after 30 minutes (--timeout) anyway, with status 124: time to look in
+  spectraweaver send ID TEXT         type into a terminal (see below)
   spectraweaver show ID              bring a terminal in front of the person
 
 Pass work and results through files, not send: a folder per task with its brief and a
@@ -79,11 +88,22 @@ REPORT.md the worker writes, say. Text sent to a terminal is typed into its inpu
 middle of whatever a person is typing there, and goes off with the person's half-written
 message. So send a worker its task once, and after that only to get an agent going again that
 stopped (at capacity, rate limited, an error) and will not look at its files until told to go
-on. Workers should not send their reports into your terminal: you read their files.
+on. Workers should not send their reports into your terminal: you read their files. A worker
+stopped by a usage limit may not go on by itself once the limit lifts: when ls says "lifted"
+(or wait --until lifted returns), send it "continue".
 
-Look in on the workers now and then (ls, their files, read) to catch one going off track, or
-one that needs news from another. wait blocks until one stops, for when there is nothing else
-to do; run it in the background if your tools time out.
+Have workers mark their own tasks (board update ID --status done --note "..."); then
+wait --board wakes you when one does, and says which, and board show --since 30m shows what
+changed while you were away. An agent idle with a shell still running in the background
+counts as working ("a shell in background"): it carries on by itself when the shell ends.
+
+Look in on the workers now and then (ls, their files, read --reply) to catch one going off
+track, or one that needs news from another. wait blocks until something happens, for when
+there is nothing else to do; run it in the background if your tools time out. It wakes you
+after 30 minutes even if nothing happened, listing how long each worker has been doing what
+it does ("working 6h50m: a shell in background"): a job that hangs keeps a worker working and
+would never wake you, so check anything running far longer than it should (its screen, its
+log), then wait again. Wait longer between looks with --timeout 2h, never with none.
 `;
 
 export async function cmdBoard(args: string[]): Promise<void> {
@@ -93,7 +113,7 @@ export async function cmdBoard(args: string[]): Promise<void> {
     return;
   }
   if (!["set", "update", "show", "clear"].includes(command)) fail(`unknown board command: ${command}\n\n${BOARD_HELP}`);
-  const flags = parseFlags(rest, command === "update" ? ["tab", ...TASK_OPTIONS, "after"] : ["tab"]);
+  const flags = parseFlags(rest, command === "update" ? ["tab", ...TASK_OPTIONS, "after"] : command === "show" ? ["tab", "since"] : ["tab"]);
   const paths = resolvePaths();
   const tab = await boardTab(paths, flag(flags, "tab"));
   const query = `/api/v1/board?tab=${encodeURIComponent(tab)}`;
@@ -120,7 +140,8 @@ export async function cmdBoard(args: string[]): Promise<void> {
       if (after !== undefined) patch.after = after.split(",").map((word) => word.trim()).filter(Boolean);
       if (Object.keys(patch).length === 0) fail("say what to change: --status, --note, --title, --after, --session or --link");
       const path = `/api/v1/board/task?tab=${encodeURIComponent(tab)}&id=${encodeURIComponent(id)}`;
-      const result = needServer(await serverCall<BoardResult>(paths, "PATCH", path, { patch }));
+      const by = process.env.SPECTRAWEAVER_SESSION_ID || undefined;
+      const result = needServer(await serverCall<BoardResult>(paths, "PATCH", path, { patch, by }));
       for (const warning of result.warnings) console.error(`warning: ${warning}`);
       const task = result.tab.board!.tasks.find((candidate) => candidate.id === id);
       console.log(`${id} ${task?.status ?? ""}; board of “${result.tab.name}”: ${summary(result.tab.board!)}`);
@@ -130,7 +151,12 @@ export async function cmdBoard(args: string[]): Promise<void> {
       const found = needServer(await serverCall<{ tab: TabView }>(paths, "GET", query));
       if (!found.tab.board) fail(`“${found.tab.name}” has no board (\`spectraweaver board set\` makes one)`);
       const { title, tasks, updatedAt } = found.tab.board;
-      console.log(JSON.stringify({ title, tasks, updatedAt: new Date(updatedAt).toISOString() }, null, 2));
+      // --since 30m, or a time: only the tasks changed since.
+      const since = flag(flags, "since");
+      const from = since === undefined ? undefined : sinceTime(since);
+      const shown = from === undefined ? tasks : tasks.filter((task) => (task.updatedAt ?? 0) >= from);
+      const readable = shown.map((task) => (task.updatedAt === undefined ? task : { ...task, updatedAt: new Date(task.updatedAt).toISOString() }));
+      console.log(JSON.stringify({ title, tasks: readable, updatedAt: new Date(updatedAt).toISOString() }, null, 2));
       return;
     }
     case "clear": {
@@ -141,6 +167,14 @@ export async function cmdBoard(args: string[]): Promise<void> {
     default:
       fail(`unknown board command: ${command}\n\n${BOARD_HELP}`);
   }
+}
+
+/** `--since`: a while back ("30m") or a time ("2026-11-23T04:00", as Date reads it). */
+function sinceTime(text: string): number {
+  if (/^\d+(?:\.\d+)?[smhd]?$/.test(text.trim())) return Date.now() - duration(text, "--since");
+  const at = Date.parse(text);
+  if (!Number.isFinite(at)) fail(`--since takes a while back such as 30m or 2h, or a time such as 2026-11-23T04:00, not ${JSON.stringify(text)}`);
+  return at;
 }
 
 /** The options of `board update` that set a task's field of the same name, as given. */

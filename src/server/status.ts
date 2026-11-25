@@ -161,6 +161,12 @@ export function claudeStatus(
   const status = registry?.status;
   const warning = transcript ? claudeWarning(transcript) : undefined;
   if (status === "busy") return withWarning({ activity: "working" }, warning);
+  // Its turn is over but a shell it started in the background still runs; it carries on by itself
+  // when that ends, so it is not done: working, as far as anyone watching it is concerned.
+  const shells = screen ? backgroundShells(screen.lines) : 0;
+  if (status === "shell" || (status === "idle" && shells > 0)) {
+    return withWarning({ activity: "working", reason: shells > 1 ? `${shells} shells in background` : "a shell in background" }, warning);
+  }
   const asks = screen ? dialogText("claude", screen.lines) : undefined;
   if (status === "waiting") return withDetail({ activity: "waiting", reason: waitingLabel(registry?.waitingFor) }, asks);
   const dialog = screen ? screenSignals("claude", screen.lines).waiting : undefined;
@@ -451,6 +457,22 @@ function detail(value: string): string {
 function short(value: string): string {
   const flat = value.replace(/\s+/g, " ").trim();
   return flat.length > 40 ? `${flat.slice(0, 39)}…` : flat;
+}
+
+/**
+ * The shells Claude Code runs in the background, from its status line ("⏸ manual mode on · 1 shell
+ * · ↓ to manage"): the last lines only, and only as one of its parts, so prose does not count.
+ */
+export function backgroundShells(lines: string[]): number {
+  const bottom = lines
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-2);
+  for (const line of bottom) {
+    const match = /(?:^|·)\s*(\d+) (?:background )?shells?\s*(?:·|$)/.exec(line);
+    if (match) return Number(match[1]);
+  }
+  return 0;
 }
 
 // ---- what a dialog asks -----------------------------------------------------------------

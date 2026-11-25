@@ -336,6 +336,8 @@ export class BoardWindow {
     const shown = JSON.stringify([
       tab.name,
       board?.updatedAt,
+      // A task changed on its own (board update) keeps the board's time but gets its own.
+      (board?.tasks ?? []).map((task) => task.updatedAt ?? 0),
       tab.boardWindow?.direction,
       board?.lead ? shownState(sessions.get(board.lead)) : null,
       (board?.tasks ?? []).map((task) => (task.session ? shownState(sessions.get(task.session)) : null)),
@@ -667,6 +669,10 @@ export class BoardWindow {
     // The server only stores http(s) links; checked again here, as meta.json can be edited by hand.
     if (task.link && /^https?:\/\//i.test(task.link)) {
       parts.push(el("a", { href: task.link, target: "_blank", rel: "noopener noreferrer" }, ["link ↗"]));
+    }
+    if (task.updatedAt !== undefined) {
+      const by = task.updatedBy ? ` by ${this.sessions.get(task.updatedBy)?.banner || task.updatedBy}` : "";
+      parts.push(el("span", { class: "board-muted" }, [`changed ${ago(task.updatedAt, Date.now())}${by}`]));
     }
     const live = lives.get(task.id);
     parts.push(el("span", { class: "spacer" }));

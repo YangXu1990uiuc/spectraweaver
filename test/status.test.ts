@@ -5,6 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ScreenText } from "../src/common/protocol.ts";
 import {
+  backgroundShells,
   claudeModel,
   claudeReply,
   claudeStatus,
@@ -180,6 +181,25 @@ describe("the screen", () => {
     expect(screenSignals("codex", ["Selected model is at capacity.", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "›"]).stop?.reason).toBe(
       "at capacity",
     );
+  });
+});
+
+describe("a shell in the background", () => {
+  // As Claude Code 2.1.330 shows it: its registry says "shell", its status line counts them.
+  const footer = (part: string) => screen(["● started", "─".repeat(100), "❯", "─".repeat(100), `  ⏸ manual mode on · ${part} · ↓ to manage`]);
+
+  test("an agent idle with a shell still running counts as working: it carries on by itself", () => {
+    expect(claudeStatus({ status: "shell" }, [], footer("1 shell"), NOW)).toEqual({ activity: "working", reason: "a shell in background" });
+    expect(claudeStatus({ status: "shell" }, [], footer("5 shells"), NOW)).toEqual({ activity: "working", reason: "5 shells in background" });
+    expect(claudeStatus({ status: "shell" }, [], null, NOW)).toEqual({ activity: "working", reason: "a shell in background" });
+    // A version whose registry says only idle: the status line still tells.
+    expect(claudeStatus({ status: "idle" }, [], footer("2 shells"), NOW)?.reason).toBe("2 shells in background");
+    expect(claudeStatus({ status: "idle" }, [], footer("? for shortcuts"), NOW)).toEqual({ activity: "idle" });
+  });
+
+  test("only the status line counts, not words in the conversation", () => {
+    expect(backgroundShells(["● I started 3 shells for the tests", "─".repeat(100), "❯", "  ⏸ manual mode on · ? for shortcuts"])).toBe(0);
+    expect(backgroundShells(["  ⏵⏵ auto mode on · 1 shell · esc to interrupt · ↓ to manage", "", ""])).toBe(1);
   });
 });
 

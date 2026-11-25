@@ -52,7 +52,7 @@ export interface Control {
    * Changes one task of a tab's board (null or "" removes a field), or adds it when the board has
    * no task with that id; throws BoardError if there is no board or the result is not valid.
    */
-  updateTask(tab: string, id: string, patch: Record<string, unknown>): BoardResult;
+  updateTask(tab: string, id: string, patch: Record<string, unknown>, by?: string): BoardResult;
   /**
    * The latest reply of the agent in a terminal, running or the last one it ran; null if there
    * is no such terminal, an Error saying why if there is no reply.
@@ -180,7 +180,7 @@ export function controlRoutes(control: Control, token: () => string | null, host
         const input = await body(request);
         const patch = typeof input.patch === "object" && input.patch !== null && !Array.isArray(input.patch) ? input.patch : {};
         try {
-          return Response.json(control.updateTask(name, id, patch as Record<string, unknown>));
+          return Response.json(control.updateTask(name, id, patch as Record<string, unknown>, string(input.by)));
         } catch (error) {
           if (error instanceof BoardError) return new Response(`the task was not changed: ${error.message}`, { status: 400 });
           throw error;

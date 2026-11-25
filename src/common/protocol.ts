@@ -262,6 +262,12 @@ export interface BoardTask {
   note?: string;
   /** An http(s) link: a pull request, the task's folder. */
   link?: string;
+  /**
+   * When the task last changed (ms since the epoch), and from which terminal: stamped by the
+   * server when a set or an update changes it, never taken from what an agent sends.
+   */
+  updatedAt?: number;
+  updatedBy?: string;
 }
 
 export interface Board {

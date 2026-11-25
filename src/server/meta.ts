@@ -60,6 +60,14 @@ export class MetaStore {
     try {
       const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<MetaFile>;
       const tabs = (parsed.tabs ?? []).filter((tab) => TAB_ID.test(tab.id)).map(withSaneBoard);
+      // Names are unique, as commands find a tab by its name; files from before that rule may repeat
+      // one. A repeat takes a name no tab has; the others keep theirs.
+      const seen = new Set<string>();
+      for (const tab of tabs) {
+        tab.name = String(tab.name ?? "");
+        if (seen.has(tab.name.toLowerCase())) tab.name = uniqueName(tab.name, tabs);
+        seen.add(tab.name.toLowerCase());
+      }
       this.data = {
         version: 2,
         tabs: tabs.length > 0 ? tabs : [{ ...DEFAULT_TAB }],
@@ -266,7 +274,7 @@ export class MetaStore {
     if (!TAB_ID.test(tab.id) || this.hasTab(tab.id)) return false;
     this.data.tabs.push({
       id: tab.id,
-      name: cleanName(tab.name) || "New tab",
+      name: uniqueName(cleanName(tab.name) || "New tab", this.data.tabs),
       color: COLOR.test(tab.color) ? tab.color : TAB_COLORS[0],
       grid: GRID_PATTERN.test(tab.grid) ? tab.grid : DEFAULT_TAB.grid,
     });
@@ -277,7 +285,9 @@ export class MetaStore {
   updateTab(id: string, patch: { name?: string; color?: string; grid?: string }): boolean {
     const tab = this.data.tabs.find((candidate) => candidate.id === id);
     if (!tab) return false;
-    if (patch.name !== undefined && cleanName(patch.name)) tab.name = cleanName(patch.name);
+    if (patch.name !== undefined && cleanName(patch.name)) {
+      tab.name = uniqueName(cleanName(patch.name), this.data.tabs.filter((other) => other.id !== id));
+    }
     if (patch.color !== undefined && COLOR.test(patch.color)) tab.color = patch.color;
     if (patch.grid !== undefined && GRID_PATTERN.test(patch.grid)) tab.grid = patch.grid;
     this.scheduleSave();
@@ -390,6 +400,21 @@ function withSaneBoard(tab: TabView): TabView {
     if (boardWindow.direction === "down" || boardWindow.direction === "right") sane.boardWindow.direction = boardWindow.direction;
   }
   return sane;
+}
+
+/**
+ * A name none of `others` has, whatever its case: the name, or with its number counted on ("Tab 2"
+ * taken: "Tab 3"), or a number added ("Project 2").
+ */
+export function uniqueName(name: string, others: readonly TabView[]): string {
+  const taken = new Set(others.map((tab) => tab.name.toLowerCase()));
+  if (!taken.has(name.toLowerCase())) return name;
+  const numbered = /^(.*?)(\d+)$/.exec(name);
+  const stem = numbered ? numbered[1]! : `${name} `;
+  for (let n = numbered ? Number(numbered[2]) + 1 : 2; ; n++) {
+    const candidate = `${stem.slice(0, 60 - String(n).length)}${n}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
 }
 
 /** A tab name as stored: on one line, at most 60 characters. */

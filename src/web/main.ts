@@ -140,7 +140,10 @@ const tabStrip = new TabStrip({
     const id = randomId();
     const color = TAB_COLORS[(tabs.length + 6) % TAB_COLORS.length]!;
     const from = currentView().tab;
-    send({ t: "tab-create", id, name: `Tab ${tabs.length + 1}`, color, grid: from?.grid ?? "2x2" });
+    // The first "Tab N" no tab has (the server keeps names unique in any case).
+    let n = 1;
+    while (tabs.some((tab) => tab.name.toLowerCase() === `tab ${n}`)) n++;
+    send({ t: "tab-create", id, name: `Tab ${n}`, color, grid: from?.grid ?? "2x2" });
     tabStrip.renameOnArrival(id);
     showTab(id);
   },

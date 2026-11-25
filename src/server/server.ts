@@ -38,7 +38,7 @@ import {
   validatePassword,
 } from "./auth.ts";
 import { agentNamed, detectAgent, resumeCommand, shellQuote } from "./agents.ts";
-import { BoardError, parseBoard } from "./board.ts";
+import { BoardError, parseBoard, stampTasks } from "./board.ts";
 import { type AgentDirs, agentDirs, Conversations } from "./conversations.ts";
 import { type Control, type CreateRequest, controlRoutes } from "./control-api.ts";
 import { DaemonClient } from "./daemon-client.ts";
@@ -765,8 +765,11 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
     board: (name) => findTab(name) ?? null,
     setBoard: (name, input, lead) => {
       // Checked before the tab is looked up, so a board with mistakes makes no tab.
-      const board = parseBoard(input, Date.now(), lead && sessions.has(lead) ? lead : undefined);
+      const now = Date.now();
+      const pusher = lead && sessions.has(lead) ? lead : undefined;
+      const board = parseBoard(input, now, pusher);
       const tab = tabFor(name);
+      stampTasks(board, meta.board(tab), now, pusher);
       if (meta.setBoard(tab, board)) layOutForBoard(tab, board);
       broadcastTabs();
       const warnings = board.tasks.flatMap((task) =>
@@ -776,7 +779,7 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
       );
       return { tab: meta.tabs().find((candidate) => candidate.id === tab)!, warnings };
     },
-    updateTask: (name, id, patch) => {
+    updateTask: (name, id, patch, by) => {
       const tab = findTab(name);
       const current = tab?.board;
       if (!tab || !current) throw new BoardError(`“${name}” has no board; \`spectraweaver board set\` makes one`);
@@ -793,9 +796,11 @@ export async function startServer(options: ServerOptions): Promise<ServerHandle>
         if (value === null || value === "" || (Array.isArray(value) && value.length === 0)) delete task[field];
         else task[field] = value;
       }
-      // Checked as a whole, as a pushed board is: a new "after" may close a circle.
+      // Checked as a whole, as a pushed board is: a new "after" may close a circle. The board keeps
+      // when its lead last pushed it, which says whether the lead keeps up; the task gets its own stamp.
       const lead = current.lead && sessions.has(current.lead) ? current.lead : undefined;
-      const board = parseBoard({ title: current.title, tasks }, Date.now(), lead);
+      const board = parseBoard({ title: current.title, tasks }, current.updatedAt, lead);
+      stampTasks(board, current, Date.now(), by && sessions.has(by) ? by : undefined);
       meta.setBoard(tab.id, board);
       broadcastTabs();
       const changed = board.tasks.find((candidate) => candidate.id === id);

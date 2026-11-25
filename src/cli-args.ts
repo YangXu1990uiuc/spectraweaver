@@ -7,7 +7,7 @@
 import { VERSION } from "./common/version.ts";
 
 export const FIRST_PORT = 7777;
-const BOOLEAN_FLAGS = new Set(["all", "clear", "rotate", "reset", "allow-remote", "json", "no-enter", "show", "changed", "reply"]);
+const BOOLEAN_FLAGS = new Set(["all", "clear", "rotate", "reset", "allow-remote", "json", "no-enter", "show", "changed", "reply", "board"]);
 
 export const USAGE = `spectraweaver ${VERSION}: persistent terminals in the browser
 
@@ -32,11 +32,12 @@ Usage:
                         when the home directory is small or on NFS
 
 Terminals (for scripts and coding agents too; ID is a terminal's id, from \`ls\` or \`new\`):
-  spectraweaver ls [--json] [--tab NAME]
-                        list terminals: tab, banner, and what each one's coding agent is doing
-                        (working, idle, waiting for an answer, or stopped and why) and its
-                        model; --json adds what a waiting agent's dialog asks, and when a usage
-                        limit lifts
+  spectraweaver ls [--json] [--tab NAME | --all]
+                        list terminals (from a SpectraWeaver terminal: those of its own tab,
+                        unless --tab or --all): tab, banner, and what each one's coding agent
+                        is doing (working, idle, waiting for an answer, or stopped and why) and
+                        its model; --json adds what a waiting agent's dialog asks, and when a
+                        usage limit lifts
   spectraweaver new [--tab NAME] [--banner TEXT] [--size 160x48] [--cwd DIR] [--show] [-- COMMAND...]
                         create a terminal (160x48 unless --size) and print its id; COMMAND is
                         typed into its shell. It lands in the tab of the terminal the command
@@ -54,11 +55,16 @@ Terminals (for scripts and coding agents too; ID is a terminal's id, from \`ls\`
   spectraweaver send ID --key NAME [--key NAME]...
                         press keys: enter, esc, tab, shift-tab, up, down, left, right, backspace,
                         ctrl-c, ctrl-d, or a single character
-  spectraweaver wait ID... [--until STATES] [--all] [--changed] [--timeout 30m]
+  spectraweaver wait [ID...] [--board [--tab NAME]] [--until STATES] [--all] [--changed]
+                     [--timeout 30m]
                         wait until one of the terminals stops working (--all: all of them) and
                         print it; STATES, comma-separated: idle, waiting, stopped, exited (all
-                        four by default). --changed counts only a state entered after the wait
-                        began, as after a send. Status 124 on timeout
+                        four by default), or lifted (a usage limit that has). --changed counts
+                        only a state entered after the wait began, as after a send. --board:
+                        return too once a task of the board changes, not by this terminal, and
+                        say what changed. After --timeout (30m by default; none waits for
+                        ever) it returns anyway, with status 124 and how long each has been
+                        doing what it does: time to look in
   spectraweaver banner ID TEXT
                         set a terminal's banner
   spectraweaver resize ID COLSxROWS
@@ -73,7 +79,7 @@ Task boards (for an agent coordinating others; \`spectraweaver board --help\` ex
                         state of the terminal working on each
   spectraweaver board update ID [--status S] [--note TEXT] [--tab NAME] ...
                         change one task, or add it
-  spectraweaver board show | clear [--tab NAME]
+  spectraweaver board show [--since 30m] | clear [--tab NAME]
 
 In the foreground (for debugging, or under a service manager):
   spectraweaver daemon    run the daemon in the foreground
@@ -127,6 +133,24 @@ export function noArguments(flags: Flags, command: string): void {
 export function asksForHelp(args: string[]): boolean {
   const end = args.indexOf("--");
   return (end < 0 ? args : args.slice(0, end)).some((arg) => arg === "-h" || arg === "--help");
+}
+
+/** "90s", "30m", "2h", "1d", or seconds, in ms; `option` names it in the error. */
+export function duration(text: string, option: string): number {
+  const match = /^(\d+(?:\.\d+)?)(s|m|h|d)?$/.exec(text.trim());
+  if (!match) fail(`${option} takes a duration such as 90s, 30m or 2h, not ${JSON.stringify(text)}`);
+  return Number(match[1]) * { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[(match[2] ?? "s") as "s" | "m" | "h" | "d"];
+}
+
+/** A while, briefly: "45s", "12m", "6h50m", "2d3h". */
+export function elapsed(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return `${Math.max(0, Math.floor(ms / 1000))}s`;
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 > 0 ? `${hours}h${minutes % 60}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 > 0 ? `${days}d${hours % 24}h` : `${days}d`;
 }
 
 export function flag(flags: Flags, name: string): string | undefined {
