@@ -9,7 +9,8 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentStatus, SessionView, TabView } from "../src/common/protocol.ts";
+import type { AgentActivity, AgentStatus, Board, SessionView, TabView } from "../src/common/protocol.ts";
+import { STALL_SETTLE_MS, stoppedWorking } from "../src/control.ts";
 import { type DaemonHandle, startDaemon } from "../src/daemon/daemon.ts";
 import { type ServerHandle, startServer } from "../src/server/server.ts";
 import { fixture, TEST_SHELL, tempPaths } from "./helpers.ts";
@@ -418,6 +419,27 @@ test("a coordinating agent's board: pushed from its terminal, with its workers p
   expect((await session(quiet))?.hidden).toBeUndefined();
   for (const id of [lead, worker, quiet, shown]) await cli("close", id);
 }, 60_000);
+
+test("a wait on the board is told once a task's terminal stops working, not while it stays stopped", () => {
+  const board: Board = { tasks: [{ id: "T1", title: "Train", status: "wip", session: "w1" }], updatedAt: 0 };
+  const doing = (activity: AgentActivity) => new Map([["w1", { id: "w1", agent: { name: "claude", activity } } as SessionView]]);
+  const busy = new Map<string, number | null>();
+  const told = "T1 in progress, but its terminal w1 is no longer working: claude idle";
+  // Stopped already when the wait began: a wait in a loop is not woken again and again.
+  expect(stoppedWorking(board, doing("idle"), busy, 0)).toEqual([]);
+  expect(stoppedWorking(board, doing("idle"), busy, 60_000)).toEqual([]);
+  // Between two turns for a moment: not stopped.
+  expect(stoppedWorking(board, doing("working"), busy, 61_000)).toEqual([]);
+  expect(stoppedWorking(board, doing("idle"), busy, 62_000)).toEqual([]);
+  expect(stoppedWorking(board, doing("working"), busy, 63_000)).toEqual([]);
+  // Stopped, and staying so: told once.
+  expect(stoppedWorking(board, doing("idle"), busy, 64_000)).toEqual([]);
+  expect(stoppedWorking(board, doing("idle"), busy, 64_000 + STALL_SETTLE_MS)).toEqual([told]);
+  expect(stoppedWorking(board, doing("idle"), busy, 70_000 + STALL_SETTLE_MS)).toEqual([]);
+  // Closed: told at once.
+  expect(stoppedWorking(board, doing("working"), busy, 80_000)).toEqual([]);
+  expect(stoppedWorking(board, new Map(), busy, 81_000)).toEqual(["T1 in progress, but its terminal w1 is no longer working: it closed"]);
+});
 
 test("ls from a terminal lists its own tab, and says how many it leaves out; --all lists every tab", async () => {
   const here = (await cli("new", "--tab", "Here", "--cwd", project)).trim();

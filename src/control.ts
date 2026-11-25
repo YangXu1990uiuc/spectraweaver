@@ -201,7 +201,7 @@ export async function cmdWait(args: string[]): Promise<void> {
   let before: Map<string, BoardTask> | undefined;
   let boardTab: string | undefined;
   /** With --board: the terminals of tasks in progress seen working since the wait began. */
-  const busy = new Set<string>();
+  const busy = new Map<string, number | null>();
   for (let first = true; ; first = false) {
     const listed = await serverCall<Listing>(paths, "GET", "/api/v1/sessions");
     if (!listed) fail("wait asks the server what the agents are doing; start it with `spectraweaver up`");
@@ -267,14 +267,23 @@ export async function cmdWait(args: string[]): Promise<void> {
 }
 
 /**
+ * How long a terminal must have stopped working before `wait --board` says so: an agent between
+ * two turns (a job in the background just ended, the turn it wakes not yet begun) has not.
+ */
+export const STALL_SETTLE_MS = 5000;
+
+/**
  * The tasks in progress whose terminal, seen working during the wait, no longer is (it went idle,
  * waits, stopped or closed) while the task is still in progress: "T26 in progress, but its
- * terminal 1444054a is no longer working: claude idle". The waiting terminal's own are left out.
+ * terminal 1444054a is no longer working: claude idle". Said once, when it stops (for
+ * STALL_SETTLE_MS; at once when closed), not while it stays stopped: a terminal not working when
+ * the wait began does not end it. `busy` has the terminals seen working during the wait, with
+ * since when each has stopped (null: working). The waiting terminal's own are left out.
  */
-function stoppedWorking(
+export function stoppedWorking(
   board: Board | undefined,
   sessions: ReadonlyMap<string, SessionView>,
-  busy: Set<string>,
+  busy: Map<string, number | null>,
   now: number,
 ): string[] {
   const self = process.env.SPECTRAWEAVER_SESSION_ID;
@@ -283,10 +292,16 @@ function stoppedWorking(
   for (const id of terminals) {
     const session = sessions.get(id);
     if (waitStates(session, now).has("working")) {
-      busy.add(id);
+      busy.set(id, null);
       continue;
     }
-    if (!busy.delete(id)) continue;
+    if (!busy.has(id)) continue;
+    const since = busy.get(id) ?? now;
+    if (session && now - since < STALL_SETTLE_MS) {
+      busy.set(id, since);
+      continue;
+    }
+    busy.delete(id);
     const tasks = stalledTasks(board, id).map((task) => task.id).join(", ");
     const state = !session ? "it closed" : session.agent ? agentText(session.agent, now) : stateOf(session);
     lines.push(`${tasks} in progress, but its terminal ${id} is no longer working: ${state}`);

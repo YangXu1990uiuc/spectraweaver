@@ -75,14 +75,16 @@ Workers' terminals (run from a terminal in the tab, they land in it):
                                      its model, for one waiting what its dialog asks
                                      ("detail"), for one stopped by a usage limit when it lifts
                                      ("resetsAt"; "lifted" once it has); "T26 in progress ⚠"
-                                     on one no longer working while its task is in progress
+                                     on one no longer working while its task is in progress;
+                                     --json gives each terminal's shell "pid" too
   spectraweaver read ID --reply      the agent's latest reply, without the rest of the screen
   spectraweaver read ID [--lines N]  a terminal's screen as text (N: its last N lines)
   spectraweaver wait [ID...] [--board] [--until STATES] [--timeout 30m]
                         returns once one of the terminals stops working (idle, waiting,
                         stopped, exited), or with --board once a task of this tab's board
                         changes (not by you) or a task's terminal stops working while the
-                        task is in progress, and says what happened; after 30 minutes
+                        task is in progress (when it stops: one stopped already when the wait
+                        begins does not end it), and says what happened; after 30 minutes
                         (--timeout) anyway, with status 124: time to look in
   spectraweaver send ID TEXT         type into a terminal (see below)
   spectraweaver show ID              bring a terminal in front of the person
@@ -107,7 +109,11 @@ job that has to outlive the agent (setsid, nohup) is invisible to it: then the w
 starts a watcher with its background run (while kill -0 PID; do sleep 60; done), which ends
 with the job and wakes it, and puts the PID and the log's path in the task's note. A worker idle while
 its task is in progress, with nothing to wake it, is marked in ls ("T26 in progress ⚠"), and
-wait --board wakes you when one goes idle: find out why and set it going again.
+wait --board wakes you when one stops working: find out why and set it going again.
+
+Which terminal started a process: every process started in a terminal, setsid and nohup ones
+too, has SPECTRAWEAVER_SESSION_ID=<its id> in its environment (/proc/PID/environ); and those
+still attached to it descend from its shell, whose PID ls --json gives ("pid").
 
 Look in on the workers now and then (ls, their files, read --reply) to catch one going off
 track, or one that needs news from another. wait blocks until something happens, for when

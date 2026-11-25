@@ -62,8 +62,8 @@ Terminals (for scripts and coding agents too; ID is a terminal's id, from \`ls\`
                         four by default), or lifted (a usage limit that has). --changed counts
                         only a state entered after the wait began, as after a send. --board:
                         return too once a task of the board changes, not by this terminal, or
-                        a task's terminal stops working while the task is in progress, and
-                        say what happened. After --timeout (30m by default; none waits for
+                        a task's terminal stops working while the task is in progress (when
+                        it stops, not while it stays stopped), and say what happened. After --timeout (30m by default; none waits for
                         ever) it returns anyway, with status 124 and how long each has been
                         doing what it does: time to look in
   spectraweaver banner ID TEXT
